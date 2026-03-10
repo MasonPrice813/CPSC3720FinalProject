@@ -13,7 +13,9 @@ class TestController
     {
         $headers = getallheaders();
 
-        if (!isset($headers["X-Test-Password"]) || $headers["X-Test-Password"] !== "clemson-test-2026") {
+        $password = $headers["X-Test-Password"] ?? $headers["X-Test-Mode"] ?? null;
+
+        if ($password !== "clemson-test-2026") {
             Response::error(403, "Forbidden");
         }
     }
@@ -73,13 +75,21 @@ class TestController
             Response::error(400, "Ships must be an array.");
         }
 
-        // Verify game exists
-        $stmt = $this->pdo->prepare("SELECT grid_size FROM games WHERE game_id = :game_id");
+        // Verify game exists AND ensure ships can only be placed while waiting
+        $stmt = $this->pdo->prepare("
+            SELECT grid_size, status
+            FROM games
+            WHERE game_id = :game_id
+        ");
         $stmt->execute([":game_id" => $gameId]);
         $game = $stmt->fetch();
 
         if (!$game) {
             Response::error(404, "Game not found.");
+        }
+
+        if ($game["status"] !== "waiting") {
+            Response::error(400, "Ships can only be placed before the game starts.");
         }
 
         $gridSize = (int)$game["grid_size"];
@@ -112,9 +122,10 @@ class TestController
                 Response::error(400, "Ship out of bounds.");
             }
 
-            // prevent overlap
+            // Prevent overlap
             $overlap = $this->pdo->prepare("
-                SELECT COUNT(*) FROM ships
+                SELECT COUNT(*)
+                FROM ships
                 WHERE game_id = :game_id
                 AND row_idx = :row
                 AND col_idx = :col

@@ -13,7 +13,7 @@ class TestController
     {
         $headers = getallheaders();
 
-        if (!isset($headers["X-Test-Password"]) || $headers["X-Test-Password"] !== "clemson-test-2026") {
+        if (!isset($headers["X-Test-Mode"]) || $headers["X-Test-Mode"] !== "clemson-test-2026") {
             Response::error(403, "Forbidden");
         }
     }

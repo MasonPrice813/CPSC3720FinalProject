@@ -9,6 +9,41 @@ class GameController
         $this->pdo = $pdo;
     }
 
+    /*
+    Create Player
+    */
+    public function createPlayer(): void
+    {
+        $body = Utils::getJsonBody();
+        $username = trim($body['username'] ?? '');
+
+        if ($username === '') {
+            Response::error(400, 'Username is required.');
+        }
+
+        $playerId = Utils::generateUuid();
+
+        $stmt = $this->pdo->prepare("
+            INSERT INTO players (id, username, wins, losses)
+            VALUES (:id, :username, 0, 0)
+        ");
+
+        $stmt->execute([
+            ':id' => $playerId,
+            ':username' => $username
+        ]);
+
+        Response::json(201, [
+            'playerId' => $playerId,
+            'username' => $username,
+            'wins' => 0,
+            'losses' => 0
+        ]);
+    }
+
+    /*
+    Create Game
+    */
     public function createGame(): void
     {
         $body = Utils::getJsonBody();
@@ -49,6 +84,9 @@ class GameController
         ]);
     }
 
+    /*
+    Join Game
+    */
     public function joinGame(string $gameId): void
     {
         $body = Utils::getJsonBody();
@@ -90,30 +128,17 @@ class GameController
             Response::error(409, 'Game is already full.');
         }
 
-        $dupStmt = $this->pdo->prepare("
-            SELECT id
-            FROM players
-            WHERE game_id = :game_id AND LOWER(name) = LOWER(:name)
-        ");
-        $dupStmt->execute([
-            ':game_id' => $gameId,
-            ':name' => $name
-        ]);
-
-        if ($dupStmt->fetch()) {
-            Response::error(409, 'Duplicate player name in this game.');
-        }
-
         $playerId = Utils::generateUuid();
 
         $insertStmt = $this->pdo->prepare("
-            INSERT INTO players (id, game_id, name)
-            VALUES (:id, :game_id, :name)
+            INSERT INTO players (id, game_id, username)
+            VALUES (:id, :game_id, :username)
         ");
+
         $insertStmt->execute([
             ':id' => $playerId,
             ':game_id' => $gameId,
-            ':name' => $name
+            ':username' => $name
         ]);
 
         Response::json(201, [
@@ -124,13 +149,17 @@ class GameController
         ]);
     }
 
+    /*
+    Get Game
+    */
     public function getGame(string $gameId): void
     {
         $gameStmt = $this->pdo->prepare("
-            SELECT id, status, grid_size, max_players, created_at
+            SELECT id, status, grid_size, max_players
             FROM games
             WHERE id = :id
         ");
+
         $gameStmt->execute([':id' => $gameId]);
         $game = $gameStmt->fetch();
 
@@ -139,11 +168,11 @@ class GameController
         }
 
         $playersStmt = $this->pdo->prepare("
-            SELECT id, name, created_at
+            SELECT id, username
             FROM players
             WHERE game_id = :game_id
-            ORDER BY created_at ASC
         ");
+
         $playersStmt->execute([':game_id' => $gameId]);
         $players = $playersStmt->fetchAll();
 

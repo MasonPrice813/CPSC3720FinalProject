@@ -2,22 +2,44 @@
 
 class Database
 {
-    private PDO $pdo;
+   private PDO $pdo;
 
-    public function __construct(array $config)
-    {
-        $db = $config['db'];
+   public function __construct()
+   {
+       $databaseUrl = getenv('DATABASE_URL');
 
-        $dsn = "mysql:host={$db['host']};port={$db['port']};dbname={$db['name']};charset={$db['charset']}";
+       if (!$databaseUrl) {
+           throw new Exception("DATABASE_URL environment variable is not set.");
+       }
 
-        $this->pdo = new PDO($dsn, $db['user'], $db['pass'], [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        ]);
-    }
+       $db = parse_url($databaseUrl);
 
-    public function pdo(): PDO
-    {
-        return $this->pdo;
-    }
+       if ($db === false) {
+           throw new Exception("Invalid DATABASE_URL format.");
+       }
+
+       $host = $db['host'];
+       $port = $db['port'] ?? 5432;
+       $dbname = ltrim($db['path'], '/');
+       $user = $db['user'];
+       $pass = $db['pass'];
+
+       $dsn = "pgsql:host=$host;port=$port;dbname=$dbname";
+
+       $this->pdo = new PDO(
+           $dsn,
+           $user,
+           $pass,
+           [
+               PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+               PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+           ]
+       );
+   }
+
+   public function pdo(): PDO
+   {
+       return $this->pdo;
+   }
 }
+

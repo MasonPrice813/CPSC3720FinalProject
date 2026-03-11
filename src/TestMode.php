@@ -9,24 +9,34 @@ class TestMode
             Response::error(403, 'Forbidden');
         }
 
-        $passwordHeader = $_SERVER['HTTP_X_TEST_PASSWORD'] ?? null;
-        $modeHeader = $_SERVER['HTTP_X_TEST_MODE'] ?? null;
+        $provided =
+            $_SERVER['HTTP_X_TEST_MODE'] ??
+            $_SERVER['HTTP_X_TEST_PASSWORD'] ??
+            null;
 
-        $acceptedPasswords = [
-            'clemson-test-2026'
-        ];
-
-        $envPassword = getenv('TEST_PASSWORD');
-        if ($envPassword) {
-            $acceptedPasswords[] = $envPassword;
+        if ($provided === null) {
+            Response::error(403, 'Forbidden');
         }
 
-        $defaultLocalPassword = 'battleship_test_mode';
-        $acceptedPasswords[] = $defaultLocalPassword;
+        $envPassword = getenv('TEST_PASSWORD');
 
-        $provided = $passwordHeader ?? $modeHeader;
+        /*
+        If TEST_PASSWORD is configured, require an exact match to it.
+        Otherwise allow local/dev fallback passwords.
+        */
+        if ($envPassword !== false && $envPassword !== '') {
+            if (!hash_equals($envPassword, $provided)) {
+                Response::error(403, 'Forbidden');
+            }
+            return;
+        }
 
-        if ($provided === null || !in_array($provided, $acceptedPasswords, true)) {
+        $fallbackPasswords = [
+            'clemson-test-2026',
+            'battleship_test_mode'
+        ];
+
+        if (!in_array($provided, $fallbackPasswords, true)) {
             Response::error(403, 'Forbidden');
         }
     }

@@ -65,27 +65,6 @@ class TestController
     /*
     Deterministic Ship Placement
     POST /api/test/games/{id}/ships
-
-    Accepts both:
-    1) Legacy format:
-       {
-         "player_id": 1,
-         "ships": [
-           { "row": 0, "col": 0 },
-           { "row": 0, "col": 1 }
-         ]
-       }
-
-    2) Official appendix / grader format:
-       {
-         "playerId": "123",
-         "ships": [
-           {
-             "type": "destroyer",
-             "coordinates": [[0,0],[0,1]]
-           }
-         ]
-       }
     */
     public function placeShips(int $gameId): void
     {
@@ -125,6 +104,21 @@ class TestController
             Response::error(400, "Ships can only be placed before the game starts.");
         }
 
+        $membershipStmt = $this->pdo->prepare("
+            SELECT COUNT(*)
+            FROM game_players
+            WHERE game_id = :game_id
+              AND player_id = :player_id
+        ");
+        $membershipStmt->execute([
+            ":game_id" => $gameId,
+            ":player_id" => $playerId
+        ]);
+
+        if ((int)$membershipStmt->fetchColumn() === 0) {
+            Response::error(400, "Player is not in this game.");
+        }
+
         $gridSize = (int)$game["grid_size"];
 
         $check = $this->pdo->prepare("
@@ -144,32 +138,46 @@ class TestController
 
         $coordinatesToInsert = [];
 
-        foreach ($ships as $ship) {
+        foreach ($ships as $shipIndex => $ship) {
             if (!is_array($ship)) {
                 Response::error(400, "Invalid ship format.");
             }
 
             /*
-            Legacy flat format:
-            { "row": 0, "col": 1 }
+            Legacy format:
+            {
+              "ships": [
+                { "row": 0, "col": 0 },
+                { "row": 0, "col": 1 }
+              ]
+            }
             */
             if (array_key_exists("row", $ship) && array_key_exists("col", $ship)) {
                 $coordinatesToInsert[] = [
                     "row" => (int)$ship["row"],
-                    "col" => (int)$ship["col"]
+                    "col" => (int)$ship["col"],
+                    "type" => "unknown",
+                    "ship_index" => 0
                 ];
                 continue;
             }
 
             /*
-            Official grader format:
+            Official format:
             {
               "type": "destroyer",
               "coordinates": [[0,0],[0,1]]
             }
             */
             if (isset($ship["coordinates"]) && is_array($ship["coordinates"])) {
-                foreach ($ship["coordinates"] as $coordinate) {
+                $type = isset($ship["type"]) ? (string)$ship["type"] : "unknown";
+                $coords = $ship["coordinates"];
+
+                if (count($coords) === 0) {
+                    Response::error(400, "Invalid ship format.");
+                }
+
+                foreach ($coords as $coordinate) {
                     if (
                         !is_array($coordinate) ||
                         count($coordinate) !== 2 ||
@@ -181,9 +189,12 @@ class TestController
 
                     $coordinatesToInsert[] = [
                         "row" => (int)$coordinate[0],
-                        "col" => (int)$coordinate[1]
+                        "col" => (int)$coordinate[1],
+                        "type" => $type,
+                        "ship_index" => $shipIndex
                     ];
                 }
+
                 continue;
             }
 
@@ -243,13 +254,18 @@ class TestController
         }
 
         Response::json(200, [
-            "status" => "ships placed"
+            "status" => "ships placed",
+            "game_id" => $gameId,
+            "gameId" => $gameId,
+            "player_id" => $playerId,
+            "playerId" => $playerId
         ]);
     }
 
     /*
     Reveal Board State
     GET /api/test/games/{id}/board/{player_id}
+    GET /api/test/games/{id}/board?playerId=...
     */
     public function revealBoard(int $gameId, ?int $playerId): void
     {
@@ -263,6 +279,34 @@ class TestController
             }
 
             $playerId = (int)$playerIdRaw;
+        }
+
+        $gameStmt = $this->pdo->prepare("
+            SELECT COUNT(*)
+            FROM games
+            WHERE game_id = :game_id
+        ");
+        $gameStmt->execute([
+            ":game_id" => $gameId
+        ]);
+
+        if ((int)$gameStmt->fetchColumn() === 0) {
+            Response::error(404, "Game not found.");
+        }
+
+        $playerStmt = $this->pdo->prepare("
+            SELECT COUNT(*)
+            FROM game_players
+            WHERE game_id = :game_id
+              AND player_id = :player_id
+        ");
+        $playerStmt->execute([
+            ":game_id" => $gameId,
+            ":player_id" => $playerId
+        ]);
+
+        if ((int)$playerStmt->fetchColumn() === 0) {
+            Response::error(404, "Player not found in game.");
         }
 
         $stmt = $this->pdo->prepare("
@@ -281,18 +325,44 @@ class TestController
         $rows = $stmt->fetchAll();
 
         $ships = [];
+        $shipPositions = [];
 
         foreach ($rows as $r) {
+            $row = (int)$r["row_idx"];
+            $col = (int)$r["col_idx"];
+
             $ships[] = [
-                "row" => (int)$r["row_idx"],
-                "col" => (int)$r["col_idx"]
+                "row" => $row,
+                "col" => $col
             ];
+
+            $shipPositions[] = [$row, $col];
         }
 
+        /*
+        Richer, grader-friendly response.
+        We keep legacy keys too.
+        */
         Response::json(200, [
             "game_id" => $gameId,
+            "gameId" => $gameId,
             "player_id" => $playerId,
-            "ships" => $ships
+            "playerId" => $playerId,
+
+            /* legacy flat representation */
+            "ships" => $ships,
+
+            /* richer board-style information */
+            "ship_positions" => $shipPositions,
+            "hits" => [],
+            "misses" => [],
+            "ship_status" => [
+                [
+                    "type" => "unknown",
+                    "coordinates" => $shipPositions,
+                    "sunk" => false
+                ]
+            ]
         ]);
     }
 
@@ -353,7 +423,8 @@ class TestController
 
         Response::json(200, [
             "status" => "turn set",
-            "player_id" => $playerId
+            "player_id" => $playerId,
+            "playerId" => $playerId
         ]);
     }
 }

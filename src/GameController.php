@@ -218,7 +218,7 @@ class GameController
             ":turn_order" => $currentPlayers
         ]);
 
-        Response::json(201, [
+        Response::json(200, [
             "player_id" => $playerId,
             "game_id" => $gameId,
             "status" => "joined"
@@ -359,7 +359,7 @@ class GameController
 
         $this->activateGameIfReady($gameId);
 
-        Response::json(201, [
+        Response::json(200, [
             "status" => "ships placed",
             "game_id" => $gameId,
             "player_id" => $playerId

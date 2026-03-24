@@ -4,34 +4,20 @@ class TestMode
 {
     public static function requireTestMode(): void
     {
-        $provided =
-            $_SERVER['HTTP_X_TEST_MODE'] ??
-            $_SERVER['HTTP_X_TEST_PASSWORD'] ??
-            null;
+        $testMode = getenv('TEST_MODE');
 
-        if ($provided === null) {
-            Response::error(403, 'Forbidden');
-        }
+        if ($testMode !== false) {
+            $normalized = strtolower(trim($testMode));
+            $enabled = in_array($normalized, ['1', 'true', 'yes', 'on'], true);
 
-        $allowedPasswords = [
-            'clemson-test-2026',
-            'battleship_test_mode'
-        ];
-
-        $envPassword = getenv('TEST_PASSWORD');
-        if ($envPassword !== false && $envPassword !== '') {
-            $allowedPasswords[] = $envPassword;
-        }
-
-        $isValid = false;
-        foreach ($allowedPasswords as $password) {
-            if (hash_equals($password, $provided)) {
-                $isValid = true;
-                break;
+            if (!$enabled) {
+                Response::error(403, 'Forbidden');
             }
         }
 
-        if (!$isValid) {
+        $provided = $_SERVER['HTTP_X_TEST_PASSWORD'] ?? null;
+
+        if ($provided === null || !hash_equals('clemson-test-2026', $provided)) {
             Response::error(403, 'Forbidden');
         }
     }

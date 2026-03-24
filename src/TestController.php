@@ -14,10 +14,6 @@ class TestController
         TestMode::requireTestMode();
     }
 
-    /*
-    Restart Game (Test Mode)
-    POST /api/test/games/{id}/restart
-    */
     public function restartGame(int $gameId): void
     {
         $this->requireTestPassword();
@@ -51,7 +47,8 @@ class TestController
 
         $this->pdo->prepare("
             UPDATE games
-            SET status = 'waiting'
+            SET status = 'waiting',
+                current_turn_index = 0
             WHERE game_id = :game_id
         ")->execute([
             ":game_id" => $gameId
@@ -62,10 +59,6 @@ class TestController
         ]);
     }
 
-    /*
-    Deterministic Ship Placement
-    POST /api/test/games/{id}/ships
-    */
     public function placeShips(int $gameId): void
     {
         $this->requireTestPassword();
@@ -143,34 +136,16 @@ class TestController
                 Response::error(400, "Invalid ship format.");
             }
 
-            /*
-            Legacy format:
-            {
-              "ships": [
-                { "row": 0, "col": 0 },
-                { "row": 0, "col": 1 }
-              ]
-            }
-            */
             if (array_key_exists("row", $ship) && array_key_exists("col", $ship)) {
                 $coordinatesToInsert[] = [
                     "row" => (int)$ship["row"],
                     "col" => (int)$ship["col"],
-                    "type" => "unknown",
                     "ship_index" => 0
                 ];
                 continue;
             }
 
-            /*
-            Official format:
-            {
-              "type": "destroyer",
-              "coordinates": [[0,0],[0,1]]
-            }
-            */
             if (isset($ship["coordinates"]) && is_array($ship["coordinates"])) {
-                $type = isset($ship["type"]) ? (string)$ship["type"] : "unknown";
                 $coords = $ship["coordinates"];
 
                 if (count($coords) === 0) {
@@ -190,7 +165,6 @@ class TestController
                     $coordinatesToInsert[] = [
                         "row" => (int)$coordinate[0],
                         "col" => (int)$coordinate[1],
-                        "type" => $type,
                         "ship_index" => $shipIndex
                     ];
                 }
@@ -253,6 +227,45 @@ class TestController
             ]);
         }
 
+        $playerCountStmt = $this->pdo->prepare("
+            SELECT COUNT(*)
+            FROM game_players
+            WHERE game_id = :game_id
+        ");
+        $playerCountStmt->execute([
+            ":game_id" => $gameId
+        ]);
+        $playerCount = (int)$playerCountStmt->fetchColumn();
+
+        $placedCountStmt = $this->pdo->prepare("
+            SELECT COUNT(*)
+            FROM (
+                SELECT gp.player_id
+                FROM game_players gp
+                LEFT JOIN ships s
+                    ON s.game_id = gp.game_id
+                   AND s.player_id = gp.player_id
+                WHERE gp.game_id = :game_id
+                GROUP BY gp.player_id
+                HAVING COUNT(s.row_idx) >= 3
+            ) placed_players
+        ");
+        $placedCountStmt->execute([
+            ":game_id" => $gameId
+        ]);
+        $placedCount = (int)$placedCountStmt->fetchColumn();
+
+        if ($playerCount > 0 && $placedCount === $playerCount) {
+            $this->pdo->prepare("
+                UPDATE games
+                SET status = 'active',
+                    current_turn_index = 0
+                WHERE game_id = :game_id
+            ")->execute([
+                ":game_id" => $gameId
+            ]);
+        }
+
         Response::json(200, [
             "status" => "ships placed",
             "game_id" => $gameId,
@@ -262,11 +275,6 @@ class TestController
         ]);
     }
 
-    /*
-    Reveal Board State
-    GET /api/test/games/{id}/board/{player_id}
-    GET /api/test/games/{id}/board?playerId=...
-    */
     public function revealBoard(int $gameId, ?int $playerId): void
     {
         $this->requireTestPassword();
@@ -339,20 +347,12 @@ class TestController
             $shipPositions[] = [$row, $col];
         }
 
-        /*
-        Richer, grader-friendly response.
-        We keep legacy keys too.
-        */
         Response::json(200, [
             "game_id" => $gameId,
             "gameId" => $gameId,
             "player_id" => $playerId,
             "playerId" => $playerId,
-
-            /* legacy flat representation */
             "ships" => $ships,
-
-            /* richer board-style information */
             "ship_positions" => $shipPositions,
             "hits" => [],
             "misses" => [],
@@ -366,19 +366,11 @@ class TestController
         ]);
     }
 
-    /*
-    Official appendix reset endpoint
-    POST /api/test/games/{id}/reset
-    */
     public function resetGame(int $gameId): void
     {
         $this->restartGame($gameId);
     }
 
-    /*
-    Optional deterministic turn setter
-    POST /api/test/games/{id}/set-turn
-    */
     public function setTurn(int $gameId): void
     {
         $this->requireTestPassword();

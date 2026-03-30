@@ -18,45 +18,61 @@ class TestController
     {
         $this->requireTestPassword();
 
-        $stmt = $this->pdo->prepare("
-            SELECT *
-            FROM games
-            WHERE game_id = :game_id
-        ");
-        $stmt->execute([
-            ":game_id" => $gameId
-        ]);
+        $this->pdo->beginTransaction();
 
-        if (!$stmt->fetch()) {
-            Response::error(404, "Game not found.");
+        try {
+            $stmt = $this->pdo->prepare("
+                SELECT *
+                FROM games
+                WHERE game_id = :game_id
+                FOR UPDATE
+            ");
+            $stmt->execute([
+                ":game_id" => $gameId
+            ]);
+
+            if (!$stmt->fetch()) {
+                if ($this->pdo->inTransaction()) {
+                    $this->pdo->rollBack();
+                }
+                Response::error(404, "Game not found.");
+            }
+
+            $this->pdo->prepare("
+                DELETE FROM ships
+                WHERE game_id = :game_id
+            ")->execute([
+                ":game_id" => $gameId
+            ]);
+
+            $this->pdo->prepare("
+                DELETE FROM moves
+                WHERE game_id = :game_id
+            ")->execute([
+                ":game_id" => $gameId
+            ]);
+
+            $this->pdo->prepare("
+                UPDATE games
+                SET status = 'waiting',
+                    current_turn_index = 0,
+                    winner_id = NULL
+                WHERE game_id = :game_id
+            ")->execute([
+                ":game_id" => $gameId
+            ]);
+
+            $this->pdo->commit();
+
+            Response::json(200, [
+                "status" => "reset"
+            ]);
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
         }
-
-        $this->pdo->prepare("
-            DELETE FROM ships
-            WHERE game_id = :game_id
-        ")->execute([
-            ":game_id" => $gameId
-        ]);
-
-        $this->pdo->prepare("
-            DELETE FROM moves
-            WHERE game_id = :game_id
-        ")->execute([
-            ":game_id" => $gameId
-        ]);
-
-        $this->pdo->prepare("
-            UPDATE games
-            SET status = 'waiting',
-                current_turn_index = 0
-            WHERE game_id = :game_id
-        ")->execute([
-            ":game_id" => $gameId
-        ]);
-
-        Response::json(200, [
-            "status" => "reset"
-        ]);
     }
 
     public function placeShips(int $gameId): void
@@ -78,201 +94,249 @@ class TestController
             Response::error(400, "Ships must be an array.");
         }
 
-        $stmt = $this->pdo->prepare("
-            SELECT grid_size, status
-            FROM games
-            WHERE game_id = :game_id
-        ");
-        $stmt->execute([
-            ":game_id" => $gameId
-        ]);
+        $this->pdo->beginTransaction();
 
-        $game = $stmt->fetch();
+        try {
+            $stmt = $this->pdo->prepare("
+                SELECT grid_size, status
+                FROM games
+                WHERE game_id = :game_id
+                FOR UPDATE
+            ");
+            $stmt->execute([
+                ":game_id" => $gameId
+            ]);
 
-        if (!$game) {
-            Response::error(404, "Game not found.");
-        }
+            $game = $stmt->fetch();
 
-        if ($game["status"] !== "waiting") {
-            Response::error(400, "Ships can only be placed before the game starts.");
-        }
-
-        $membershipStmt = $this->pdo->prepare("
-            SELECT COUNT(*)
-            FROM game_players
-            WHERE game_id = :game_id
-              AND player_id = :player_id
-        ");
-        $membershipStmt->execute([
-            ":game_id" => $gameId,
-            ":player_id" => $playerId
-        ]);
-
-        if ((int)$membershipStmt->fetchColumn() === 0) {
-            Response::error(400, "Player is not in this game.");
-        }
-
-        $gridSize = (int)$game["grid_size"];
-
-        $check = $this->pdo->prepare("
-            SELECT COUNT(*)
-            FROM ships
-            WHERE game_id = :game_id
-              AND player_id = :player_id
-        ");
-        $check->execute([
-            ":game_id" => $gameId,
-            ":player_id" => $playerId
-        ]);
-
-        if ((int)$check->fetchColumn() > 0) {
-            Response::error(400, "Player has already placed ships.");
-        }
-
-        $coordinatesToInsert = [];
-
-        foreach ($ships as $shipIndex => $ship) {
-            if (!is_array($ship)) {
-                Response::error(400, "Invalid ship format.");
-            }
-
-            if (array_key_exists("row", $ship) && array_key_exists("col", $ship)) {
-                $coordinatesToInsert[] = [
-                    "row" => (int)$ship["row"],
-                    "col" => (int)$ship["col"],
-                    "ship_index" => 0
-                ];
-                continue;
-            }
-
-            if (isset($ship["coordinates"]) && is_array($ship["coordinates"])) {
-                $coords = $ship["coordinates"];
-
-                if (count($coords) === 0) {
-                    Response::error(400, "Invalid ship format.");
+            if (!$game) {
+                if ($this->pdo->inTransaction()) {
+                    $this->pdo->rollBack();
                 }
+                Response::error(404, "Game not found.");
+            }
 
-                foreach ($coords as $coordinate) {
-                    if (
-                        !is_array($coordinate) ||
-                        count($coordinate) !== 2 ||
-                        !is_numeric($coordinate[0]) ||
-                        !is_numeric($coordinate[1])
-                    ) {
-                        Response::error(400, "Invalid ship format.");
-                    }
-
-                    $coordinatesToInsert[] = [
-                        "row" => (int)$coordinate[0],
-                        "col" => (int)$coordinate[1],
-                        "ship_index" => $shipIndex
-                    ];
+            if ($game["status"] !== "waiting") {
+                if ($this->pdo->inTransaction()) {
+                    $this->pdo->rollBack();
                 }
-
-                continue;
+                Response::error(400, "Ships can only be placed before the game starts.");
             }
 
-            Response::error(400, "Invalid ship format.");
-        }
+            $membershipStmt = $this->pdo->prepare("
+                SELECT COUNT(*)
+                FROM game_players
+                WHERE game_id = :game_id
+                  AND player_id = :player_id
+            ");
+            $membershipStmt->execute([
+                ":game_id" => $gameId,
+                ":player_id" => $playerId
+            ]);
 
-        if (count($coordinatesToInsert) === 0) {
-            Response::error(400, "No ship coordinates provided.");
-        }
-
-        $seen = [];
-
-        foreach ($coordinatesToInsert as $coordinate) {
-            $row = $coordinate["row"];
-            $col = $coordinate["col"];
-
-            if ($row < 0 || $col < 0 || $row >= $gridSize || $col >= $gridSize) {
-                Response::error(400, "Ship out of bounds.");
+            if ((int)$membershipStmt->fetchColumn() === 0) {
+                if ($this->pdo->inTransaction()) {
+                    $this->pdo->rollBack();
+                }
+                Response::error(400, "Player is not in this game.");
             }
 
-            $key = $row . "," . $col;
-            if (isset($seen[$key])) {
-                Response::error(400, "Ship overlap.");
-            }
-            $seen[$key] = true;
+            $gridSize = (int)$game["grid_size"];
 
-            $overlap = $this->pdo->prepare("
+            $check = $this->pdo->prepare("
                 SELECT COUNT(*)
                 FROM ships
                 WHERE game_id = :game_id
-                  AND row_idx = :row
-                  AND col_idx = :col
+                  AND player_id = :player_id
             ");
-            $overlap->execute([
+            $check->execute([
                 ":game_id" => $gameId,
-                ":row" => $row,
-                ":col" => $col
+                ":player_id" => $playerId
             ]);
 
-            if ((int)$overlap->fetchColumn() > 0) {
-                Response::error(400, "Ship overlap.");
+            if ((int)$check->fetchColumn() > 0) {
+                if ($this->pdo->inTransaction()) {
+                    $this->pdo->rollBack();
+                }
+                Response::error(400, "Player has already placed ships.");
             }
-        }
 
-        $insert = $this->pdo->prepare("
-            INSERT INTO ships (game_id, player_id, row_idx, col_idx)
-            VALUES (:game_id, :player_id, :row, :col)
-        ");
+            $coordinatesToInsert = [];
 
-        foreach ($coordinatesToInsert as $coordinate) {
-            $insert->execute([
-                ":game_id" => $gameId,
-                ":player_id" => $playerId,
-                ":row" => $coordinate["row"],
-                ":col" => $coordinate["col"]
-            ]);
-        }
+            foreach ($ships as $shipIndex => $ship) {
+                if (!is_array($ship)) {
+                    if ($this->pdo->inTransaction()) {
+                        $this->pdo->rollBack();
+                    }
+                    Response::error(400, "Invalid ship format.");
+                }
 
-        $playerCountStmt = $this->pdo->prepare("
-            SELECT COUNT(*)
-            FROM game_players
-            WHERE game_id = :game_id
-        ");
-        $playerCountStmt->execute([
-            ":game_id" => $gameId
-        ]);
-        $playerCount = (int)$playerCountStmt->fetchColumn();
+                if (array_key_exists("row", $ship) && array_key_exists("col", $ship)) {
+                    $coordinatesToInsert[] = [
+                        "row" => (int)$ship["row"],
+                        "col" => (int)$ship["col"],
+                        "ship_index" => 0
+                    ];
+                    continue;
+                }
 
-        $placedCountStmt = $this->pdo->prepare("
-            SELECT COUNT(*)
-            FROM (
-                SELECT gp.player_id
-                FROM game_players gp
-                LEFT JOIN ships s
-                    ON s.game_id = gp.game_id
-                   AND s.player_id = gp.player_id
-                WHERE gp.game_id = :game_id
-                GROUP BY gp.player_id
-                HAVING COUNT(s.row_idx) >= 3
-            ) placed_players
-        ");
-        $placedCountStmt->execute([
-            ":game_id" => $gameId
-        ]);
-        $placedCount = (int)$placedCountStmt->fetchColumn();
+                if (isset($ship["coordinates"]) && is_array($ship["coordinates"])) {
+                    $coords = $ship["coordinates"];
 
-        if ($playerCount > 0 && $placedCount === $playerCount) {
-            $this->pdo->prepare("
-                UPDATE games
-                SET status = 'active',
-                    current_turn_index = 0
+                    if (count($coords) === 0) {
+                        if ($this->pdo->inTransaction()) {
+                            $this->pdo->rollBack();
+                        }
+                        Response::error(400, "Invalid ship format.");
+                    }
+
+                    foreach ($coords as $coordinate) {
+                        if (
+                            !is_array($coordinate) ||
+                            count($coordinate) !== 2 ||
+                            !is_numeric($coordinate[0]) ||
+                            !is_numeric($coordinate[1])
+                        ) {
+                            if ($this->pdo->inTransaction()) {
+                                $this->pdo->rollBack();
+                            }
+                            Response::error(400, "Invalid ship format.");
+                        }
+
+                        $coordinatesToInsert[] = [
+                            "row" => (int)$coordinate[0],
+                            "col" => (int)$coordinate[1],
+                            "ship_index" => $shipIndex
+                        ];
+                    }
+
+                    continue;
+                }
+
+                if ($this->pdo->inTransaction()) {
+                    $this->pdo->rollBack();
+                }
+                Response::error(400, "Invalid ship format.");
+            }
+
+            if (count($coordinatesToInsert) === 0) {
+                if ($this->pdo->inTransaction()) {
+                    $this->pdo->rollBack();
+                }
+                Response::error(400, "No ship coordinates provided.");
+            }
+
+            $seen = [];
+
+            foreach ($coordinatesToInsert as $coordinate) {
+                $row = $coordinate["row"];
+                $col = $coordinate["col"];
+
+                if ($row < 0 || $col < 0 || $row >= $gridSize || $col >= $gridSize) {
+                    if ($this->pdo->inTransaction()) {
+                        $this->pdo->rollBack();
+                    }
+                    Response::error(400, "Ship out of bounds.");
+                }
+
+                $key = $row . "," . $col;
+                if (isset($seen[$key])) {
+                    if ($this->pdo->inTransaction()) {
+                        $this->pdo->rollBack();
+                    }
+                    Response::error(400, "Ship overlap.");
+                }
+                $seen[$key] = true;
+
+                $overlap = $this->pdo->prepare("
+                    SELECT COUNT(*)
+                    FROM ships
+                    WHERE game_id = :game_id
+                      AND row_idx = :row
+                      AND col_idx = :col
+                ");
+                $overlap->execute([
+                    ":game_id" => $gameId,
+                    ":row" => $row,
+                    ":col" => $col
+                ]);
+
+                if ((int)$overlap->fetchColumn() > 0) {
+                    if ($this->pdo->inTransaction()) {
+                        $this->pdo->rollBack();
+                    }
+                    Response::error(400, "Ship overlap.");
+                }
+            }
+
+            $insert = $this->pdo->prepare("
+                INSERT INTO ships (game_id, player_id, row_idx, col_idx)
+                VALUES (:game_id, :player_id, :row, :col)
+            ");
+
+            foreach ($coordinatesToInsert as $coordinate) {
+                $insert->execute([
+                    ":game_id" => $gameId,
+                    ":player_id" => $playerId,
+                    ":row" => $coordinate["row"],
+                    ":col" => $coordinate["col"]
+                ]);
+            }
+
+            $playerCountStmt = $this->pdo->prepare("
+                SELECT COUNT(*)
+                FROM game_players
                 WHERE game_id = :game_id
-            ")->execute([
+            ");
+            $playerCountStmt->execute([
                 ":game_id" => $gameId
             ]);
-        }
+            $playerCount = (int)$playerCountStmt->fetchColumn();
 
-        Response::json(200, [
-            "status" => "ships placed",
-            "game_id" => $gameId,
-            "gameId" => $gameId,
-            "player_id" => $playerId,
-            "playerId" => $playerId
-        ]);
+            $placedCountStmt = $this->pdo->prepare("
+                SELECT COUNT(*)
+                FROM (
+                    SELECT gp.player_id
+                    FROM game_players gp
+                    LEFT JOIN ships s
+                        ON s.game_id = gp.game_id
+                       AND s.player_id = gp.player_id
+                    WHERE gp.game_id = :game_id
+                    GROUP BY gp.player_id
+                    HAVING COUNT(s.row_idx) >= 3
+                ) placed_players
+            ");
+            $placedCountStmt->execute([
+                ":game_id" => $gameId
+            ]);
+            $placedCount = (int)$placedCountStmt->fetchColumn();
+
+            if ($playerCount > 0 && $placedCount === $playerCount) {
+                $this->pdo->prepare("
+                    UPDATE games
+                    SET status = 'active',
+                        current_turn_index = 0
+                    WHERE game_id = :game_id
+                ")->execute([
+                    ":game_id" => $gameId
+                ]);
+            }
+
+            $this->pdo->commit();
+
+            Response::json(200, [
+                "status" => "ships placed",
+                "game_id" => $gameId,
+                "gameId" => $gameId,
+                "player_id" => $playerId,
+                "playerId" => $playerId
+            ]);
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
     }
 
     public function revealBoard(int $gameId, ?int $playerId): void
@@ -324,7 +388,6 @@ class TestController
               AND player_id = :player_id
             ORDER BY row_idx, col_idx
         ");
-
         $stmt->execute([
             ":game_id" => $gameId,
             ":player_id" => $playerId
@@ -336,15 +399,15 @@ class TestController
         $shipPositions = [];
 
         foreach ($rows as $r) {
-            $row = (int)$r["row_idx"];
-            $col = (int)$r["col_idx"];
+            $rIdx = (int)$r["row_idx"];
+            $cIdx = (int)$r["col_idx"];
 
             $ships[] = [
-                "row" => $row,
-                "col" => $col
+                "row" => $rIdx,
+                "col" => $cIdx
             ];
 
-            $shipPositions[] = [$row, $col];
+            $shipPositions[] = [$rIdx, $cIdx];
         }
 
         Response::json(200, [

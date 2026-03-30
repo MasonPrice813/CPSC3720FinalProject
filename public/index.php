@@ -48,7 +48,7 @@ if ($method === 'POST' && $uri === '/players') {
     $controller->createPlayer();
 }
 
-if ($method === 'GET' && preg_match('#^/players/([0-9]+|[a-zA-Z0-9\-]+)/stats$#', $uri, $matches)) {
+if ($method === 'GET' && preg_match('#^/players/([0-9]+)/stats$#', $uri, $matches)) {
     $controller->getPlayerStats((int)$matches[1]);
 }
 
@@ -56,43 +56,47 @@ if ($method === 'POST' && $uri === '/games') {
     $controller->createGame();
 }
 
-if ($method === 'POST' && preg_match('#^/games/([0-9]+|[a-zA-Z0-9\-]+)/join$#', $uri, $matches)) {
+if ($method === 'POST' && preg_match('#^/games/([0-9]+)/join$#', $uri, $matches)) {
     $controller->joinGame((int)$matches[1]);
 }
 
-if ($method === 'GET' && preg_match('#^/games/([0-9]+|[a-zA-Z0-9\-]+)$#', $uri, $matches)) {
+if ($method === 'GET' && preg_match('#^/games/([0-9]+)$#', $uri, $matches)) {
     $controller->getGame((int)$matches[1]);
 }
 
-if ($method === 'POST' && preg_match('#^/games/([0-9]+|[a-zA-Z0-9\-]+)/place$#', $uri, $matches)) {
+if ($method === 'POST' && preg_match('#^/games/([0-9]+)/place$#', $uri, $matches)) {
     $controller->placeShips((int)$matches[1]);
 }
 
-if ($method === 'POST' && preg_match('#^/games/([0-9]+|[a-zA-Z0-9\-]+)/fire$#', $uri, $matches)) {
+if ($method === 'POST' && preg_match('#^/games/([0-9]+)/fire$#', $uri, $matches)) {
     $controller->fire((int)$matches[1]);
 }
 
-if ($method === 'POST' && preg_match('#^/test/games/([0-9]+|[a-zA-Z0-9\-]+)/restart$#', $uri, $matches)) {
+if ($method === 'GET' && preg_match('#^/games/([0-9]+)/moves$#', $uri, $matches)) {
+    $controller->getMoves((int)$matches[1]);
+}
+
+if ($method === 'POST' && preg_match('#^/test/games/([0-9]+)/restart$#', $uri, $matches)) {
     $testController->restartGame((int)$matches[1]);
 }
 
-if ($method === 'POST' && preg_match('#^/test/games/([0-9]+|[a-zA-Z0-9\-]+)/ships$#', $uri, $matches)) {
+if ($method === 'POST' && preg_match('#^/test/games/([0-9]+)/ships$#', $uri, $matches)) {
     $testController->placeShips((int)$matches[1]);
 }
 
-if ($method === 'GET' && preg_match('#^/test/games/([0-9]+|[a-zA-Z0-9\-]+)/board/([0-9]+|[a-zA-Z0-9\-]+)$#', $uri, $matches)) {
+if ($method === 'GET' && preg_match('#^/test/games/([0-9]+)/board/([0-9]+)$#', $uri, $matches)) {
     $testController->revealBoard((int)$matches[1], (int)$matches[2]);
 }
 
-if ($method === 'GET' && preg_match('#^/test/games/([0-9]+|[a-zA-Z0-9\-]+)/board$#', $uri, $matches)) {
+if ($method === 'GET' && preg_match('#^/test/games/([0-9]+)/board$#', $uri, $matches)) {
     $testController->revealBoard((int)$matches[1], null);
 }
 
-if ($method === 'POST' && preg_match('#^/test/games/([0-9]+|[a-zA-Z0-9\-]+)/reset$#', $uri, $matches)) {
+if ($method === 'POST' && preg_match('#^/test/games/([0-9]+)/reset$#', $uri, $matches)) {
     $testController->resetGame((int)$matches[1]);
 }
 
-if ($method === 'POST' && preg_match('#^/test/games/([0-9]+|[a-zA-Z0-9\-]+)/set-turn$#', $uri, $matches)) {
+if ($method === 'POST' && preg_match('#^/test/games/([0-9]+)/set-turn$#', $uri, $matches)) {
     $testController->setTurn((int)$matches[1]);
 }
 

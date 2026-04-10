@@ -17,11 +17,6 @@ class GameController
 
     public function createPlayer(): void
     {
-        $count = $this->pdo->query("SELECT COUNT(*) FROM players")->fetchColumn();
-
-        if ($count > 0) {
-            $this->pdo->exec("TRUNCATE TABLE moves, ships, game_players, games, players RESTART IDENTITY CASCADE");
-        }
         
         $body = Utils::getJsonBody();
 
@@ -41,6 +36,12 @@ class GameController
 
         if (!preg_match('/^[A-Za-z0-9_]+$/', $username)) {
             Response::error(400, 'bad_request', 'Username may only contain letters, numbers, and underscores.');
+        }
+
+        $check = $this->pdo->prepare('SELECT 1 FROM players WHERE display_name = :u');
+        $check->execute([':u' => $username]);
+        if ($check->fetch()) {
+            Response::error(409, 'conflict', 'Username already taken.');
         }
 
         try {

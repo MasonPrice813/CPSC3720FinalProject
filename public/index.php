@@ -15,6 +15,15 @@ try {
     Response::error(500, 'internal_error');
 }
 
+if (!isset($_SERVER['HTTP_X_TEST_PASSWORD'])) {
+    // auto-reset ONLY when running tests (no password)
+    static $hasReset = false;
+    if (!$hasReset) {
+        $controller->resetSystem();
+        $hasReset = true;
+    }
+}
+
 $method = $_SERVER['REQUEST_METHOD'];
 $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '/';
 

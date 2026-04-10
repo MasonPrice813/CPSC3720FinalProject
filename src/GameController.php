@@ -127,11 +127,12 @@ class GameController
             ]);
             $gameId = (int)$stmt->fetchColumn();
 
-            $joinStmt = $this->pdo->prepare('INSERT INTO game_players (game_id, player_id, turn_order) VALUES (:game_id, :player_id, 0)');
-            $joinStmt->execute([
-                ':game_id' => $gameId,
-                ':player_id' => $creatorId,
-            ]);
+            //AUTO INSERT THE GAME CREATOR INTO THE GAME
+            //$joinStmt = $this->pdo->prepare('INSERT INTO game_players (game_id, player_id, turn_order) VALUES (:game_id, :player_id, 0)');
+            //$joinStmt->execute([
+                //':game_id' => $gameId,
+                //':player_id' => $creatorId,
+            //]);
 
             $this->pdo->commit();
 

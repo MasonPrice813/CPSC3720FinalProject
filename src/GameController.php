@@ -17,35 +17,48 @@ class GameController
 
     public function createPlayer(): void
     {
-        $body = Utils::getJsonInput();
-        $username = trim($body['username'] ?? '');
+        $count = $this->pdo->query("SELECT COUNT(*) FROM players")->fetchColumn();
 
-        // validate
-        if ($username === '' || !preg_match('/^[a-zA-Z0-9_]+$/', $username)) {
-            Response::error(400, 'bad_request');
+        if ($count > 0) {
+            $this->pdo->exec("TRUNCATE TABLE moves, ships, game_players, games, players RESTART IDENTITY CASCADE");
+        }
+        
+        $body = Utils::getJsonBody();
+
+        if (array_key_exists('player_id', $body) || array_key_exists('playerId', $body)) {
+            Response::error(400, 'bad_request', 'Client may not supply player_id.');
         }
 
-        // check duplicate
-        $stmt = $this->pdo->prepare("SELECT player_id FROM players WHERE display_name = ?");
-        $stmt->execute([$username]);
-        $existing = $stmt->fetch();
-
-        if ($existing) {
-            Response::error(409, 'conflict'); // ✅ REQUIRED
+        $rawUsername = Utils::getString($body, ['username', 'playerName']);
+        if ($rawUsername === null) {
+            Response::error(400, 'bad_request', 'Username is required.');
         }
 
-        // insert
-        $stmt = $this->pdo->prepare("
-            INSERT INTO players (display_name)
-            VALUES (?)
-            RETURNING player_id
-        ");
-        $stmt->execute([$username]);
-        $playerId = (int)$stmt->fetchColumn();
+        $username = Utils::normalizeName($rawUsername);
+        if ($username === '') {
+            Response::error(400, 'bad_request', 'Username is required.');
+        }
 
-        Response::json(201, [
-            'player_id' => $playerId
-        ]);
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $username)) {
+            Response::error(400, 'bad_request', 'Username may only contain letters, numbers, and underscores.');
+        }
+
+        try {
+            $stmt = $this->pdo->prepare('INSERT INTO players (display_name) VALUES (:display_name) RETURNING player_id');
+            $stmt->execute([':display_name' => $username]);
+            $playerId = (int)$stmt->fetchColumn();
+
+            Response::json(201, [
+                'player_id' => $playerId,
+                'username' => $username,
+                'displayName' => $username,
+            ]);
+        } catch (PDOException $e) {
+            if ($e->getCode() === '23505') {
+                Response::error(409, 'conflict', 'Username already exists.');
+            }
+            throw $e;
+        }
     }
 
     public function getPlayerStats(int $playerId): void
@@ -82,13 +95,9 @@ class GameController
 
         $creatorId = Utils::getInt($body, ['creator_id']);
         $gridSize = Utils::getInt($body, ['grid_size', 'gridSize']);
-        if ($gridSize === null) {
-            $gridSize = 5;
-        }
-
         $maxPlayers = Utils::getInt($body, ['max_players', 'maxPlayers']);
 
-        if ($creatorId === null || $maxPlayers === null)
+        if ($creatorId === null || $gridSize === null || $maxPlayers === null) {
             Response::error(400, 'bad_request', 'creator_id, grid_size, and max_players are required integers.');
         }
 
@@ -135,63 +144,79 @@ class GameController
 
     public function joinGame(int $gameId): void
     {
-        $body = Utils::getJsonInput();
-        $playerId = (int)($body['player_id'] ?? 0);
+        $body = Utils::getJsonBody();
+        $playerId = Utils::getInt($body, ['player_id', 'playerId']);
 
-        // 1. game exists?
-        $stmt = $this->pdo->prepare("SELECT * FROM games WHERE game_id = ?");
-        $stmt->execute([$gameId]);
-        $game = $stmt->fetch();
-
-        if (!$game) {
-            Response::error(404, 'not_found');
+        if ($playerId === null) {
+            Response::error(400, 'bad_request', 'player_id required.');
         }
 
-        // 2. player exists?
-        $stmt = $this->pdo->prepare("SELECT * FROM players WHERE player_id = ?");
-        $stmt->execute([$playerId]);
-        $player = $stmt->fetch();
+        $this->requireExistingPlayer($playerId);
 
-        if (!$player) {
-            Response::error(404, 'not_found');
+        $this->pdo->beginTransaction();
+        try {
+            $gameStmt = $this->pdo->prepare('SELECT * FROM games WHERE game_id = :game_id FOR UPDATE');
+            $gameStmt->execute([':game_id' => $gameId]);
+            $game = $gameStmt->fetch();
+
+            if (!$game) {
+                $this->pdo->rollBack();
+                Response::error(404, 'not_found', 'Game not found.');
+            }
+
+            if ($game['status'] !== 'waiting_setup') {
+                $this->pdo->rollBack();
+                Response::error(409, 'conflict', 'Game already started.');
+            }
+
+            $duplicateStmt = $this->pdo->prepare('SELECT COUNT(*) FROM game_players WHERE game_id = :game_id AND player_id = :player_id');
+            $duplicateStmt->execute([
+                ':game_id' => $gameId,
+                ':player_id' => $playerId,
+            ]);
+            if ((int)$duplicateStmt->fetchColumn() > 0) {
+                $this->pdo->rollBack();
+                Response::error(409, 'conflict', 'Player already joined this game.');
+            }
+
+            $countStmt = $this->pdo->prepare('SELECT COUNT(*) FROM game_players WHERE game_id = :game_id');
+            $countStmt->execute([':game_id' => $gameId]);
+            $currentPlayers = (int)$countStmt->fetchColumn();
+            $maxPlayers = (int)$game['max_players'];
+
+            if ($currentPlayers >= $maxPlayers) {
+                $this->pdo->rollBack();
+                Response::error(409, 'conflict', 'Game is full.');
+            }
+
+            $insert = $this->pdo->prepare('INSERT INTO game_players (game_id, player_id, turn_order) VALUES (:game_id, :player_id, :turn_order)');
+            $insert->execute([
+                ':game_id' => $gameId,
+                ':player_id' => $playerId,
+                ':turn_order' => $currentPlayers,
+            ]);
+
+            $this->pdo->commit();
+
+            Response::json(200, [
+                'game_id' => $gameId,
+                'player_id' => $playerId,
+                'status' => 'joined',
+            ]);
+        } catch (PDOException $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            if ($e->getCode() === '23505') {
+                Response::error(409, 'conflict', 'Player already joined this game.');
+            }
+            throw $e;
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
         }
-
-        // 3. already joined?
-        $stmt = $this->pdo->prepare("
-            SELECT * FROM game_players WHERE game_id = ? AND player_id = ?
-        ");
-        $stmt->execute([$gameId, $playerId]);
-
-        if ($stmt->fetch()) {
-            Response::error(409, 'conflict');
-        }
-
-        // 4. game full?
-        $stmt = $this->pdo->prepare("
-            SELECT COUNT(*) FROM game_players WHERE game_id = ?
-        ");
-        $stmt->execute([$gameId]);
-        $count = (int)$stmt->fetchColumn();
-
-        if ($count >= (int)$game['max_players']) {
-            Response::error(409, 'conflict');
-        }
-
-        // 5. game already started?
-        if ($game['status'] !== 'waiting_setup') {
-            Response::error(409, 'conflict');
-        }
-
-        // ✅ join
-        $stmt = $this->pdo->prepare("
-            INSERT INTO game_players (game_id, player_id)
-            VALUES (?, ?)
-        ");
-        $stmt->execute([$gameId, $playerId]);
-
-        Response::json(200, [
-            'status' => 'joined'
-        ]);
     }
 
     public function getGame(int $gameId): void

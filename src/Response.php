@@ -6,12 +6,20 @@ class Response
     {
         http_response_code($statusCode);
         header('Content-Type: application/json');
-        echo json_encode($data, JSON_PRETTY_PRINT);
+        echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
         exit;
     }
 
-    public static function error(int $statusCode, string $message): void
+    public static function error(int $statusCode, string $errorCode, ?string $message = null, array $extra = []): void
     {
-        self::json($statusCode, ['error' => $message]);
+        $payload = array_merge([
+            'error' => $errorCode,
+        ], $extra);
+
+        if ($message !== null) {
+            $payload['message'] = $message;
+        }
+
+        self::json($statusCode, $payload);
     }
 }

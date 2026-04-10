@@ -5,26 +5,44 @@ class Utils
     public static function getJsonBody(): array
     {
         $raw = file_get_contents('php://input');
-        $decoded = json_decode($raw, true);
+        $trimmed = trim($raw);
 
-        if ($raw !== '' && $decoded === null) {
-            Response::error(400, 'Invalid JSON body.');
+        if ($trimmed === '') {
+            return [];
         }
 
-        return $decoded ?? [];
-    }
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            Response::error(400, 'bad_request', 'Invalid JSON body.');
+        }
 
-    public static function generateUuid(): string
-    {
-        $data = random_bytes(16);
-        $data[6] = chr((ord($data[6]) & 0x0f) | 0x40);
-        $data[8] = chr((ord($data[8]) & 0x3f) | 0x80);
-
-        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
+        return $decoded;
     }
 
     public static function normalizeName(string $name): string
     {
         return trim($name);
+    }
+
+    public static function getInt(array $body, array $keys): ?int
+    {
+        foreach ($keys as $key) {
+            if (array_key_exists($key, $body) && is_int($body[$key])) {
+                return $body[$key];
+            }
+        }
+
+        return null;
+    }
+
+    public static function getString(array $body, array $keys): ?string
+    {
+        foreach ($keys as $key) {
+            if (array_key_exists($key, $body) && is_string($body[$key])) {
+                return $body[$key];
+            }
+        }
+
+        return null;
     }
 }

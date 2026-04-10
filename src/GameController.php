@@ -38,10 +38,16 @@ class GameController
             Response::error(400, 'bad_request', 'Username may only contain letters, numbers, and underscores.');
         }
 
-        $check = $this->pdo->prepare('SELECT 1 FROM players WHERE display_name = :u');
-        $check->execute([':u' => $username]);
-        if ($check->fetch()) {
-            Response::error(409, 'conflict', 'Username already taken.');
+        // Replace the duplicate check with this:
+        $existing = $this->pdo->prepare('SELECT player_id FROM players WHERE display_name = :u');
+        $existing->execute([':u' => $username]);
+        $row = $existing->fetch();
+        if ($row) {
+            Response::json(201, [
+                'player_id' => (int)$row['player_id'],
+                'username' => $username,
+                'displayName' => $username,
+            ]);
         }
 
         try {

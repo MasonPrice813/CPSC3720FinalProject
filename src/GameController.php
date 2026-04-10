@@ -82,9 +82,13 @@ class GameController
 
         $creatorId = Utils::getInt($body, ['creator_id']);
         $gridSize = Utils::getInt($body, ['grid_size', 'gridSize']);
+        if ($gridSize === null) {
+            $gridSize = 5;
+        }
+
         $maxPlayers = Utils::getInt($body, ['max_players', 'maxPlayers']);
 
-        if ($creatorId === null || $gridSize === null || $maxPlayers === null) {
+        if ($creatorId === null || $maxPlayers === null)
             Response::error(400, 'bad_request', 'creator_id, grid_size, and max_players are required integers.');
         }
 

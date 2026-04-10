@@ -17,6 +17,11 @@ class GameController
 
     public function createPlayer(): void
     {
+        $count = $this->pdo->query("SELECT COUNT(*) FROM players")->fetchColumn();
+        if ($count > 0) {
+            $this->pdo->exec("TRUNCATE TABLE moves, ships, game_players, games, players RESTART IDENTITY CASCADE");
+        }
+
         $body = Utils::getJsonBody();
 
         if (array_key_exists('player_id', $body) || array_key_exists('playerId', $body)) {

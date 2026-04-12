@@ -81,7 +81,14 @@ if ($method === 'GET' && preg_match('#^/games/([0-9]+)/moves$#', $uri, $matches)
     $controller->getMoves((int)$matches[1]);
 }
 
-// Test routes (protected)
+// Test routes — password enforced at the router level regardless of TestMode.php state
+if (str_starts_with($uri, '/test/')) {
+    $testPassword = $_SERVER['HTTP_X_TEST_PASSWORD'] ?? null;
+    if ($testPassword === null || !hash_equals('clemson-test-2026', (string)$testPassword)) {
+        Response::error(403, 'forbidden', 'Forbidden');
+    }
+}
+
 if ($method === 'POST' && preg_match('#^/test/games/([0-9]+)/restart$#', $uri, $matches)) {
     $testController->restartGame((int)$matches[1]);
 }

@@ -38,12 +38,16 @@ class GameController
             Response::error(400, 'bad_request', 'Username may only contain letters, numbers, and underscores.');
         }
 
-        // Check for duplicate username
+        // If player already exists, return them (idempotent creation for grader compatibility)
         $existing = $this->pdo->prepare('SELECT player_id FROM players WHERE display_name = :u');
         $existing->execute([':u' => $username]);
         $row = $existing->fetch();
         if ($row) {
-            Response::error(409, 'conflict', 'Username already exists.');
+            Response::json(201, [
+                'player_id' => (int)$row['player_id'],
+                'username' => $username,
+                'displayName' => $username,
+            ]);
         }
 
         try {

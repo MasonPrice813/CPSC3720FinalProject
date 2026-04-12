@@ -17,7 +17,6 @@ class GameController
 
     public function createPlayer(): void
     {
-        
         $body = Utils::getJsonBody();
 
         if (array_key_exists('player_id', $body) || array_key_exists('playerId', $body)) {
@@ -38,12 +37,11 @@ class GameController
             Response::error(400, 'bad_request', 'Username may only contain letters, numbers, and underscores.');
         }
 
-        // If player already exists, return them (idempotent creation for grader compatibility)
         $existing = $this->pdo->prepare('SELECT player_id FROM players WHERE display_name = :u');
         $existing->execute([':u' => $username]);
         $row = $existing->fetch();
         if ($row) {
-            Response::json(201, [
+            Response::error(409, 'conflict', 'Username already exists.', [
                 'player_id' => (int)$row['player_id'],
                 'username' => $username,
                 'displayName' => $username,
@@ -127,12 +125,11 @@ class GameController
             ]);
             $gameId = (int)$stmt->fetchColumn();
 
-            //AUTO INSERT THE GAME CREATOR INTO THE GAME
-            //$joinStmt = $this->pdo->prepare('INSERT INTO game_players (game_id, player_id, turn_order) VALUES (:game_id, :player_id, 0)');
-            //$joinStmt->execute([
-                //':game_id' => $gameId,
-                //':player_id' => $creatorId,
-            //]);
+            $joinStmt = $this->pdo->prepare('INSERT INTO game_players (game_id, player_id, turn_order) VALUES (:game_id, :player_id, 0)');
+            $joinStmt->execute([
+                ':game_id' => $gameId,
+                ':player_id' => $creatorId,
+            ]);
 
             $this->pdo->commit();
 
@@ -141,6 +138,8 @@ class GameController
                 'grid_size' => $gridSize,
                 'max_players' => $maxPlayers,
                 'status' => 'waiting_setup',
+                'active_players' => 1,
+                'creator_id' => $creatorId,
             ]);
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {
@@ -316,25 +315,36 @@ class GameController
             }
             if ($this->playerAlreadyPlacedShips($gameId, $playerId)) {
                 $this->pdo->rollBack();
-                Response::error(409, 'conflict', 'Player has already placed ships.');
+                Response::error(409, 'conflict', 'Ships already placed for this player.');
             }
-            if (count($ships) !== 3) {
+
+            $coordinates = [];
+            foreach ($ships as $ship) {
+                if (is_array($ship) && array_key_exists('row', $ship) && array_key_exists('col', $ship)) {
+                    $coordinates[] = ['row' => (int)$ship['row'], 'col' => (int)$ship['col']];
+                    continue;
+                }
+
+                if (is_array($ship) && count($ship) === 2 && array_key_exists(0, $ship) && array_key_exists(1, $ship)) {
+                    $coordinates[] = ['row' => (int)$ship[0], 'col' => (int)$ship[1]];
+                    continue;
+                }
+
+                Response::error(400, 'bad_request', 'Invalid ship format.');
+            }
+
+            if (count($coordinates) !== 3) {
                 $this->pdo->rollBack();
-                Response::error(400, 'bad_request', 'Exactly 3 ships are required.');
+                Response::error(400, 'bad_request', 'Exactly 3 ship coordinates are required.');
             }
 
             $gridSize = (int)$game['grid_size'];
             $seen = [];
-            $validated = [];
+            $insert = $this->pdo->prepare('INSERT INTO ships (game_id, player_id, row_idx, col_idx) VALUES (:game_id, :player_id, :row, :col)');
+            foreach ($coordinates as $coordinate) {
+                $row = $coordinate['row'];
+                $col = $coordinate['col'];
 
-            foreach ($ships as $ship) {
-                if (!is_array($ship) || !array_key_exists('row', $ship) || !array_key_exists('col', $ship) || !is_int($ship['row']) || !is_int($ship['col'])) {
-                    $this->pdo->rollBack();
-                    Response::error(400, 'bad_request', 'Each ship must include integer row and col values.');
-                }
-
-                $row = $ship['row'];
-                $col = $ship['col'];
                 if ($row < 0 || $col < 0 || $row >= $gridSize || $col >= $gridSize) {
                     $this->pdo->rollBack();
                     Response::error(400, 'bad_request', 'Ship out of bounds.');
@@ -343,43 +353,31 @@ class GameController
                 $key = $row . ',' . $col;
                 if (isset($seen[$key])) {
                     $this->pdo->rollBack();
-                    Response::error(400, 'bad_request', 'Overlapping ship coordinates are not allowed.');
+                    Response::error(400, 'bad_request', 'Ship overlap.');
                 }
                 $seen[$key] = true;
-                $validated[] = ['row' => $row, 'col' => $col];
-            }
 
-            $insertStmt = $this->pdo->prepare('INSERT INTO ships (game_id, player_id, row_idx, col_idx) VALUES (:game_id, :player_id, :row_idx, :col_idx)');
-            foreach ($validated as $ship) {
-                $insertStmt->execute([
+                $insert->execute([
                     ':game_id' => $gameId,
                     ':player_id' => $playerId,
-                    ':row_idx' => $ship['row'],
-                    ':col_idx' => $ship['col'],
+                    ':row' => $row,
+                    ':col' => $col,
                 ]);
             }
 
             if ($this->allPlayersPlacedShips($gameId)) {
-                $stmt = $this->pdo->prepare("UPDATE games SET status = 'playing', current_turn_index = 0 WHERE game_id = :game_id");
-                $stmt->execute([':game_id' => $gameId]);
+                $this->pdo->prepare("UPDATE games SET status = 'playing', current_turn_index = 0 WHERE game_id = :game_id")
+                    ->execute([':game_id' => $gameId]);
             }
 
             $this->pdo->commit();
 
             Response::json(200, [
                 'status' => 'placed',
+                'message' => 'ok',
                 'game_id' => $gameId,
                 'player_id' => $playerId,
-                'message' => 'ok',
             ]);
-        } catch (PDOException $e) {
-            if ($this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
-            }
-            if ($e->getCode() === '23505') {
-                Response::error(400, 'bad_request', 'Overlapping ship coordinates are not allowed.');
-            }
-            throw $e;
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {
                 $this->pdo->rollBack();
@@ -396,7 +394,7 @@ class GameController
         $col = Utils::getInt($body, ['col']);
 
         if ($playerId === null || $row === null || $col === null) {
-            Response::error(400, 'bad_request', 'player_id, row, and col must be integers.');
+            Response::error(400, 'bad_request', 'player_id, row, and col are required integers.');
         }
 
         $this->requireExistingPlayer($playerId);
@@ -424,18 +422,7 @@ class GameController
 
             if ($game['status'] === 'finished') {
                 $this->pdo->rollBack();
-                Response::error(409, 'conflict', 'Game is already finished.');
-            }
-
-            if ($game['status'] !== 'playing') {
-                $this->pdo->rollBack();
-                Response::error(403, 'forbidden', 'Game is not in playing state.');
-            }
-
-            $currentPlayerId = $this->getCurrentTurnPlayerId($gameId);
-            if ($currentPlayerId === null || $currentPlayerId !== $playerId) {
-                $this->pdo->rollBack();
-                Response::error(403, 'forbidden', 'It is not this player\'s turn.');
+                Response::error(409, 'conflict', 'Game already finished.');
             }
 
             $dupStmt = $this->pdo->prepare('SELECT COUNT(*) FROM moves WHERE game_id = :game_id AND row_idx = :row AND col_idx = :col');
@@ -447,6 +434,17 @@ class GameController
             if ((int)$dupStmt->fetchColumn() > 0) {
                 $this->pdo->rollBack();
                 Response::error(409, 'conflict', 'Cell already targeted.');
+            }
+
+            if ($game['status'] !== 'playing') {
+                $this->pdo->rollBack();
+                Response::error(403, 'forbidden', 'Game is not in playing state.');
+            }
+
+            $currentPlayerId = $this->getCurrentTurnPlayerId($gameId);
+            if ($currentPlayerId === null || $currentPlayerId !== $playerId) {
+                $this->pdo->rollBack();
+                Response::error(403, 'forbidden', 'not your turn');
             }
 
             $hitStmt = $this->pdo->prepare('SELECT player_id FROM ships WHERE game_id = :game_id AND row_idx = :row AND col_idx = :col AND player_id <> :player_id LIMIT 1');
@@ -468,17 +466,19 @@ class GameController
                 ':result' => $result,
             ]);
 
-            $this->pdo->prepare('UPDATE players SET total_shots = total_shots + 1, total_hits = total_hits + :hit_inc WHERE player_id = :player_id')->execute([
-                ':hit_inc' => $result === 'hit' ? 1 : 0,
-                ':player_id' => $playerId,
-            ]);
+            $this->pdo->prepare('UPDATE players SET total_shots = total_shots + 1, total_hits = total_hits + :hit_inc WHERE player_id = :player_id')
+                ->execute([
+                    ':hit_inc' => $result === 'hit' ? 1 : 0,
+                    ':player_id' => $playerId,
+                ]);
 
             $winnerId = $this->determineWinner($gameId);
             if ($winnerId !== null) {
-                $this->pdo->prepare("UPDATE games SET status = 'finished', winner_id = :winner_id WHERE game_id = :game_id")->execute([
-                    ':winner_id' => $winnerId,
-                    ':game_id' => $gameId,
-                ]);
+                $this->pdo->prepare("UPDATE games SET status = 'finished', winner_id = :winner_id WHERE game_id = :game_id")
+                    ->execute([
+                        ':winner_id' => $winnerId,
+                        ':game_id' => $gameId,
+                    ]);
                 $this->updateFinalPlayerStats($gameId, $winnerId);
                 $this->pdo->commit();
 
@@ -486,15 +486,17 @@ class GameController
                     'result' => $result,
                     'next_player_id' => null,
                     'game_status' => 'finished',
+                    'status' => 'finished',
                     'winner_id' => $winnerId,
                 ]);
             }
 
             $nextIndex = $this->getNextTurnIndex($gameId);
-            $this->pdo->prepare('UPDATE games SET current_turn_index = :turn_index WHERE game_id = :game_id')->execute([
-                ':turn_index' => $nextIndex,
-                ':game_id' => $gameId,
-            ]);
+            $this->pdo->prepare('UPDATE games SET current_turn_index = :turn_index WHERE game_id = :game_id')
+                ->execute([
+                    ':turn_index' => $nextIndex,
+                    ':game_id' => $gameId,
+                ]);
             $nextPlayerId = $this->getPlayerIdByTurnOrder($gameId, $nextIndex);
 
             $this->pdo->commit();
@@ -504,6 +506,7 @@ class GameController
                 'next_player_id' => $nextPlayerId,
                 'game_status' => 'playing',
                 'status' => 'playing',
+                'state' => 'active',
             ]);
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {
@@ -657,18 +660,15 @@ class GameController
 
         foreach ($players->fetchAll() as $row) {
             $playerId = (int)$row['player_id'];
-            $this->pdo->prepare('UPDATE players SET total_games = total_games + 1 WHERE player_id = :player_id')->execute([
-                ':player_id' => $playerId,
-            ]);
+            $this->pdo->prepare('UPDATE players SET total_games = total_games + 1 WHERE player_id = :player_id')
+                ->execute([':player_id' => $playerId]);
 
             if ($playerId === $winnerId) {
-                $this->pdo->prepare('UPDATE players SET total_wins = total_wins + 1 WHERE player_id = :player_id')->execute([
-                    ':player_id' => $playerId,
-                ]);
+                $this->pdo->prepare('UPDATE players SET total_wins = total_wins + 1 WHERE player_id = :player_id')
+                    ->execute([':player_id' => $playerId]);
             } else {
-                $this->pdo->prepare('UPDATE players SET total_losses = total_losses + 1 WHERE player_id = :player_id')->execute([
-                    ':player_id' => $playerId,
-                ]);
+                $this->pdo->prepare('UPDATE players SET total_losses = total_losses + 1 WHERE player_id = :player_id')
+                    ->execute([':player_id' => $playerId]);
             }
         }
     }

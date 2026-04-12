@@ -38,16 +38,12 @@ class GameController
             Response::error(400, 'bad_request', 'Username may only contain letters, numbers, and underscores.');
         }
 
-        // Replace the duplicate check with this:
+        // Check for duplicate username
         $existing = $this->pdo->prepare('SELECT player_id FROM players WHERE display_name = :u');
         $existing->execute([':u' => $username]);
         $row = $existing->fetch();
         if ($row) {
-            Response::json(201, [
-                'player_id' => (int)$row['player_id'],
-                'username' => $username,
-                'displayName' => $username,
-            ]);
+            Response::error(409, 'conflict', 'Username already exists.');
         }
 
         try {
@@ -424,7 +420,7 @@ class GameController
 
             if ($game['status'] === 'finished') {
                 $this->pdo->rollBack();
-                Response::error(410, 'game_over', 'Game is already finished.');
+                Response::error(409, 'conflict', 'Game is already finished.');
             }
 
             if ($game['status'] !== 'playing') {
@@ -503,6 +499,7 @@ class GameController
                 'result' => $result,
                 'next_player_id' => $nextPlayerId,
                 'game_status' => 'playing',
+                'status' => 'playing',
             ]);
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {

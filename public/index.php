@@ -46,7 +46,7 @@ if ($method === 'GET' && $uri === '/health') {
     Response::json(200, ['status' => 'ok']);
 }
 
-// Reset (unversioned, for internal use)
+// Reset
 if ($method === 'POST' && $uri === '/reset') {
     $controller->resetSystem();
 }
@@ -95,11 +95,9 @@ if ($method === 'GET' && preg_match('#^/games/([0-9]+)/moves$#', $uri, $matches)
     $controller->getMoves((int)$matches[1]);
 }
 
-// Test routes — password enforced at the router level
+// Test routes — use TestMode::getTestPassword() for consistent header detection across Apache configs
 if (str_starts_with($uri, '/test/')) {
-    $testPassword = $_SERVER['HTTP_X_TEST_PASSWORD']
-        ?? $_SERVER['REDIRECT_HTTP_X_TEST_PASSWORD']
-        ?? null;
+    $testPassword = TestMode::getTestPassword();
     if ($testPassword === null || !hash_equals('clemson-test-2026', (string)$testPassword)) {
         Response::error(403, 'forbidden', 'Forbidden');
     }

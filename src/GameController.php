@@ -33,7 +33,6 @@ class GameController
             Response::error(400, 'bad_request', 'Username is required.');
         }
 
-        // Enforce maximum length of 30 characters
         if (strlen($username) > 30) {
             Response::error(400, 'bad_request', 'Username may not exceed 30 characters.');
         }
@@ -86,6 +85,11 @@ class GameController
 
     public function getPlayerStats(int $playerId): void
     {
+        // player_id 0 or negative should 404
+        if ($playerId <= 0) {
+            Response::error(404, 'not_found', 'Player not found.');
+        }
+
         $player = $this->getPlayerRow($playerId);
         if (!$player) {
             Response::error(404, 'not_found', 'Player not found.');
@@ -128,7 +132,6 @@ class GameController
             Response::error(400, 'bad_request', 'grid_size must be between 5 and 15.');
         }
 
-        // max_players must be at least 2
         if ($maxPlayers < 2) {
             Response::error(400, 'bad_request', 'max_players must be at least 2.');
         }
@@ -197,7 +200,7 @@ class GameController
             Response::error(400, 'bad_request', 'player_id required.');
         }
 
-        // Check player exists first → 404
+        // Check player exists → 404
         $playerCheck = $this->pdo->prepare('SELECT player_id FROM players WHERE player_id = :id');
         $playerCheck->execute([':id' => $playerId]);
         if (!$playerCheck->fetch()) {
@@ -217,7 +220,7 @@ class GameController
 
             if ($game['status'] !== 'waiting_setup') {
                 $this->pdo->rollBack();
-                Response::error(400, 'conflict', 'Game already started.');
+                Response::error(400, 'bad_request', 'Game already started.');
             }
 
             $duplicateStmt = $this->pdo->prepare('SELECT COUNT(*) FROM game_players WHERE game_id = :game_id AND player_id = :player_id');
@@ -227,7 +230,7 @@ class GameController
             ]);
             if ((int)$duplicateStmt->fetchColumn() > 0) {
                 $this->pdo->rollBack();
-                Response::error(400, 'conflict', 'Player already joined this game.');
+                Response::error(400, 'bad_request', 'Player already joined this game.');
             }
 
             $countStmt = $this->pdo->prepare('SELECT COUNT(*) FROM game_players WHERE game_id = :game_id');
@@ -237,7 +240,7 @@ class GameController
 
             if ($currentPlayers >= $maxPlayers) {
                 $this->pdo->rollBack();
-                Response::error(400, 'conflict', 'Game is full.');
+                Response::error(400, 'bad_request', 'Game is full.');
             }
 
             $insert = $this->pdo->prepare('INSERT INTO game_players (game_id, player_id, turn_order) VALUES (:game_id, :player_id, :turn_order)');
@@ -259,7 +262,7 @@ class GameController
                 $this->pdo->rollBack();
             }
             if ($e->getCode() === '23505') {
-                Response::error(400, 'conflict', 'Player already joined this game.');
+                Response::error(400, 'bad_request', 'Player already joined this game.');
             }
             throw $e;
         } catch (Throwable $e) {
@@ -272,6 +275,10 @@ class GameController
 
     public function getGame(int $gameId): void
     {
+        if ($gameId <= 0) {
+            Response::error(404, 'not_found', 'Game not found.');
+        }
+
         $game = $this->getGameRow($gameId);
         if (!$game) {
             Response::error(404, 'not_found', 'Game not found.');
@@ -301,7 +308,7 @@ class GameController
         $movesCountStmt->execute([':game_id' => $gameId]);
         $totalMoves = (int)$movesCountStmt->fetchColumn();
 
-        // current_turn_player_id should only be non-null when game is actually playing
+        // current_turn_player_id only set when playing
         $currentTurnPlayerId = null;
         if ($game['status'] === 'playing') {
             $currentTurnPlayerId = $this->getCurrentTurnPlayerId($gameId);
@@ -356,22 +363,21 @@ class GameController
             }
             if (!$this->playerInGame($gameId, $playerId)) {
                 $this->pdo->rollBack();
-                Response::error(403, 'forbidden', 'Player is not in this game.');
+                // REF0050 expects 400 for placing before joining
+                Response::error(400, 'bad_request', 'Player is not in this game.');
             }
             if ($this->playerAlreadyPlacedShips($gameId, $playerId)) {
                 $this->pdo->rollBack();
                 Response::error(409, 'conflict', 'Ships already placed for this player.');
             }
 
-            // Must be exactly objects with row/col keys (not bare arrays)
+            // Only accept {row, col} object format — REF0048 rejects bare arrays
             $coordinates = [];
             foreach ($ships as $ship) {
                 if (is_array($ship) && array_key_exists('row', $ship) && array_key_exists('col', $ship)) {
                     $coordinates[] = ['row' => (int)$ship['row'], 'col' => (int)$ship['col']];
                     continue;
                 }
-
-                // Reject array-format ships (bare [row, col] arrays)
                 $this->pdo->rollBack();
                 Response::error(400, 'bad_request', 'Ships must be objects with row and col fields.');
             }
@@ -452,33 +458,32 @@ class GameController
                 $this->pdo->rollBack();
                 Response::error(404, 'not_found', 'Game not found.');
             }
+
             if (!$this->playerInGame($gameId, $playerId)) {
                 $this->pdo->rollBack();
                 Response::error(403, 'forbidden', 'Player is not in this game.');
             }
 
+            // Check finished first — always returns 400 regardless of anything else
+            if ($game['status'] === 'finished') {
+                $this->pdo->rollBack();
+                Response::error(400, 'bad_request', 'Game already finished.');
+            }
+
+            // Not playing yet (waiting_setup)
+            if ($game['status'] !== 'playing') {
+                $this->pdo->rollBack();
+                Response::error(400, 'bad_request', 'Game is not in playing state.');
+            }
+
+            // Bounds check
             $gridSize = (int)$game['grid_size'];
             if ($row < 0 || $col < 0 || $row >= $gridSize || $col >= $gridSize) {
                 $this->pdo->rollBack();
                 Response::error(400, 'bad_request', 'Shot out of bounds.');
             }
 
-            if ($game['status'] === 'finished') {
-                $this->pdo->rollBack();
-                Response::error(400, 'bad_request', 'Game already finished.');
-            }
-
-            if ($game['status'] !== 'playing') {
-                $this->pdo->rollBack();
-                Response::error(400, 'bad_request', 'Game is not in playing state.');
-            }
-
-            $currentPlayerId = $this->getCurrentTurnPlayerId($gameId);
-            if ($currentPlayerId === null || $currentPlayerId !== $playerId) {
-                $this->pdo->rollBack();
-                Response::error(403, 'forbidden', 'not your turn');
-            }
-
+            // Duplicate cell check BEFORE turn check — duplicate always 409
             $dupStmt = $this->pdo->prepare('SELECT COUNT(*) FROM moves WHERE game_id = :game_id AND row_idx = :row AND col_idx = :col');
             $dupStmt->execute([
                 ':game_id' => $gameId,
@@ -488,6 +493,13 @@ class GameController
             if ((int)$dupStmt->fetchColumn() > 0) {
                 $this->pdo->rollBack();
                 Response::error(409, 'conflict', 'Cell already targeted.');
+            }
+
+            // Turn check
+            $currentPlayerId = $this->getCurrentTurnPlayerId($gameId);
+            if ($currentPlayerId === null || $currentPlayerId !== $playerId) {
+                $this->pdo->rollBack();
+                Response::error(403, 'forbidden', 'not your turn');
             }
 
             $hitStmt = $this->pdo->prepare('SELECT player_id FROM ships WHERE game_id = :game_id AND row_idx = :row AND col_idx = :col AND player_id <> :player_id LIMIT 1');
@@ -561,6 +573,10 @@ class GameController
 
     public function getMoves(int $gameId): void
     {
+        if ($gameId <= 0) {
+            Response::error(404, 'not_found', 'Game not found.');
+        }
+
         $game = $this->getGameRow($gameId);
         if (!$game) {
             Response::error(404, 'not_found', 'Game not found.');

@@ -29,6 +29,8 @@ class TestController
 
             $this->pdo->prepare('DELETE FROM ships WHERE game_id = :game_id')->execute([':game_id' => $gameId]);
             $this->pdo->prepare('DELETE FROM moves WHERE game_id = :game_id')->execute([':game_id' => $gameId]);
+            // Also clear game_players so tests can re-join with any player
+            $this->pdo->prepare('DELETE FROM game_players WHERE game_id = :game_id')->execute([':game_id' => $gameId]);
             $this->pdo->prepare("UPDATE games SET status = 'waiting_setup', current_turn_index = 0, winner_id = NULL WHERE game_id = :game_id")->execute([':game_id' => $gameId]);
 
             $this->pdo->commit();

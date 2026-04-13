@@ -46,9 +46,14 @@ if ($method === 'GET' && $uri === '/health') {
     Response::json(200, ['status' => 'ok']);
 }
 
-// Reset
+// Reset (unversioned, for internal use)
 if ($method === 'POST' && $uri === '/reset') {
     $controller->resetSystem();
+}
+
+// Players list
+if ($method === 'GET' && $uri === '/players') {
+    $controller->listPlayers();
 }
 
 // Players
@@ -58,6 +63,11 @@ if ($method === 'POST' && $uri === '/players') {
 
 if ($method === 'GET' && preg_match('#^/players/([0-9]+)/stats$#', $uri, $matches)) {
     $controller->getPlayerStats((int)$matches[1]);
+}
+
+// Games list
+if ($method === 'GET' && $uri === '/games') {
+    $controller->listGames();
 }
 
 // Games
@@ -85,9 +95,11 @@ if ($method === 'GET' && preg_match('#^/games/([0-9]+)/moves$#', $uri, $matches)
     $controller->getMoves((int)$matches[1]);
 }
 
-// Test routes — password enforced at the router level regardless of TestMode.php state
+// Test routes — password enforced at the router level
 if (str_starts_with($uri, '/test/')) {
-    $testPassword = $_SERVER['HTTP_X_TEST_PASSWORD'] ?? null;
+    $testPassword = $_SERVER['HTTP_X_TEST_PASSWORD']
+        ?? $_SERVER['REDIRECT_HTTP_X_TEST_PASSWORD']
+        ?? null;
     if ($testPassword === null || !hash_equals('clemson-test-2026', (string)$testPassword)) {
         Response::error(403, 'forbidden', 'Forbidden');
     }

@@ -1,4 +1,4 @@
-Battleship API – CPSC 3720 Final Project, Phase 1 Part A
+Battleship API – CPSC 3720 Final Project, Phase 1
 
 Project Summary:
 This project implements a RESTful API for a multiplayer Battleship game using PHP and PostgreSQL. The system allows players to create accounts, create games, join games, and place ships on a board. The API is designed to support automated testing by providing deterministic endpoints that allow graders to place ships at specific coordinates and inspect the board state. The application is deployed on Render and communicates with a PostgreSQL database using PDO. The goal of the project is to demonstrate the design of a reliable backend system with proper validation, game state management, and structured API endpoints.

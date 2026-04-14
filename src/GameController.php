@@ -41,10 +41,10 @@ class GameController
             Response::error(400, 'bad_request', 'Username may only contain letters, numbers, and underscores.');
         }
 
-        $existing = $this->pdo->prepare('SELECT player_id FROM players WHERE display_name = :u');
+        $existing = $this->pdo->prepare('SELECT player_id FROM players WHERE LOWER(display_name) = LOWER(:u)');
         $existing->execute([':u' => $username]);
         if ($existing->fetch()) {
-            Response::error(409, 'conflict', 'Username already exists.');
+            Response::error(409, 'conflict', 'Username already taken.');
         }
 
         try {
@@ -58,7 +58,7 @@ class GameController
             ]);
         } catch (PDOException $e) {
             if ($e->getCode() === '23505') {
-                Response::error(409, 'conflict', 'Username already exists.');
+                Response::error(409, 'conflict', 'Username already taken.');
             }
             throw $e;
         }

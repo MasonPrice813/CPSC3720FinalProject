@@ -4,25 +4,25 @@ class TestMode
 {
     public static function getTestPassword(): ?string
     {
-        // Try standard CGI/FastCGI header first
-        if (!empty($_SERVER['HTTP_X_TEST_PASSWORD'])) {
-            return $_SERVER['HTTP_X_TEST_PASSWORD'];
-        }
-        if (!empty($_SERVER['REDIRECT_HTTP_X_TEST_PASSWORD'])) {
-            return $_SERVER['REDIRECT_HTTP_X_TEST_PASSWORD'];
+        $serverKeys = [
+            'HTTP_X_TEST_PASSWORD',
+            'REDIRECT_HTTP_X_TEST_PASSWORD',
+            'HTTP_X_TEST_MODE',
+            'REDIRECT_HTTP_X_TEST_MODE',
+        ];
+
+        foreach ($serverKeys as $key) {
+            if (!empty($_SERVER[$key])) {
+                return (string)$_SERVER[$key];
+            }
         }
 
-        // Apache may strip custom headers; use getallheaders() as fallback
         if (function_exists('getallheaders')) {
             $headers = getallheaders();
-            // getallheaders() keys are title-cased
-            if (!empty($headers['X-Test-Password'])) {
-                return $headers['X-Test-Password'];
-            }
-            // Some environments lowercase all headers
             foreach ($headers as $name => $value) {
-                if (strtolower($name) === 'x-test-password') {
-                    return $value;
+                $normalized = strtolower((string)$name);
+                if ($normalized === 'x-test-password' || $normalized === 'x-test-mode') {
+                    return (string)$value;
                 }
             }
         }
@@ -34,7 +34,7 @@ class TestMode
     {
         $provided = self::getTestPassword();
 
-        if ($provided === null || !hash_equals('clemson-test-2026', (string)$provided)) {
+        if ($provided === null || !hash_equals('clemson-test-2026', $provided)) {
             Response::error(403, 'forbidden', 'Forbidden');
         }
     }

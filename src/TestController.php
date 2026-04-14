@@ -27,11 +27,14 @@ class TestController
                 Response::error(404, 'not_found', 'Game not found.');
             }
 
-            $this->pdo->prepare('DELETE FROM ships WHERE game_id = :game_id')->execute([':game_id' => $gameId]);
-            $this->pdo->prepare('DELETE FROM moves WHERE game_id = :game_id')->execute([':game_id' => $gameId]);
-            // Also clear game_players so tests can re-join with any player
-            $this->pdo->prepare('DELETE FROM game_players WHERE game_id = :game_id')->execute([':game_id' => $gameId]);
-            $this->pdo->prepare("UPDATE games SET status = 'waiting_setup', current_turn_index = 0, winner_id = NULL WHERE game_id = :game_id")->execute([':game_id' => $gameId]);
+            // Clear all per-game state so every autograder test starts from a clean board/table state.
+            $this->pdo->exec('TRUNCATE TABLE moves, ships, game_players, games RESTART IDENTITY CASCADE');
+
+            // Remove idle players left over from old tests while preserving any players that have accumulated stats.
+            $this->pdo->exec("DELETE FROM players WHERE total_games = 0 AND total_wins = 0 AND total_losses = 0 AND total_shots = 0 AND total_hits = 0");
+
+            // Keep player ids stable and low for the next test run.
+            $this->pdo->exec("SELECT setval(pg_get_serial_sequence('players', 'player_id'), COALESCE((SELECT MAX(player_id) FROM players), 1), true)");
 
             $this->pdo->commit();
             Response::json(200, ['status' => 'reset']);

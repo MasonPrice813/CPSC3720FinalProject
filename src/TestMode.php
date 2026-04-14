@@ -12,8 +12,8 @@ class TestMode
         ];
 
         if (function_exists('getallheaders')) {
-            foreach ((array)getallheaders() as $name => $value) {
-                $lower = strtolower((string)$name);
+            foreach (getallheaders() as $name => $value) {
+                $lower = strtolower($name);
                 if ($lower === 'x-test-password' || $lower === 'x-test-mode') {
                     $candidates[] = $value;
                 }
@@ -32,7 +32,8 @@ class TestMode
     public static function requireTestMode(): void
     {
         $provided = self::getTestPassword();
-        if ($provided === null || !hash_equals('clemson-test-2026', $provided)) {
+
+        if ($provided === null || !hash_equals('clemson-test-2026', (string)$provided)) {
             Response::error(403, 'forbidden', 'Forbidden');
         }
     }

@@ -20,43 +20,18 @@ class TestController
 
         $this->pdo->beginTransaction();
         try {
-            $stmt = $this->pdo->prepare('SELECT game_id, grid_size, max_players FROM games WHERE game_id = :game_id FOR UPDATE');
+            $stmt = $this->pdo->prepare('SELECT * FROM games WHERE game_id = :game_id FOR UPDATE');
             $stmt->execute([':game_id' => $gameId]);
-            $game = $stmt->fetch(PDO::FETCH_ASSOC);
+            $game = $stmt->fetch();
             if (!$game) {
                 $this->pdo->rollBack();
                 Response::error(404, 'not_found', 'Game not found.');
             }
 
-            // Preserve only players with meaningful lifetime stats so fresh tests do not inherit usernames/ids.
-            $playersStmt = $this->pdo->query("SELECT player_id, display_name, total_games, total_wins, total_losses, total_shots, total_hits FROM players WHERE total_games > 0 OR total_wins > 0 OR total_losses > 0 OR total_shots > 0 OR total_hits > 0 ORDER BY player_id ASC");
-            $preservedPlayers = $playersStmt->fetchAll(PDO::FETCH_ASSOC);
-
-            $this->pdo->exec('TRUNCATE TABLE moves, ships, game_players, games, players RESTART IDENTITY CASCADE');
-
-            if (!empty($preservedPlayers)) {
-                $insertPlayer = $this->pdo->prepare('INSERT INTO players (player_id, display_name, total_games, total_wins, total_losses, total_shots, total_hits) VALUES (:player_id, :display_name, :total_games, :total_wins, :total_losses, :total_shots, :total_hits)');
-                foreach ($preservedPlayers as $player) {
-                    $insertPlayer->execute([
-                        ':player_id' => (int)$player['player_id'],
-                        ':display_name' => $player['display_name'],
-                        ':total_games' => (int)$player['total_games'],
-                        ':total_wins' => (int)$player['total_wins'],
-                        ':total_losses' => (int)$player['total_losses'],
-                        ':total_shots' => (int)$player['total_shots'],
-                        ':total_hits' => (int)$player['total_hits'],
-                    ]);
-                }
-                $this->pdo->query("SELECT setval(pg_get_serial_sequence('players', 'player_id'), COALESCE((SELECT MAX(player_id) FROM players), 1), true)");
-            }
-
-            $insertGame = $this->pdo->prepare("INSERT INTO games (game_id, grid_size, max_players, status, current_turn_index, winner_id) VALUES (:game_id, :grid_size, :max_players, 'waiting_setup', 0, NULL)");
-            $insertGame->execute([
-                ':game_id' => (int)$game['game_id'],
-                ':grid_size' => (int)$game['grid_size'],
-                ':max_players' => (int)$game['max_players'],
-            ]);
-            $this->pdo->query("SELECT setval(pg_get_serial_sequence('games', 'game_id'), COALESCE((SELECT MAX(game_id) FROM games), 1), true)");
+            $this->pdo->prepare('DELETE FROM ships WHERE game_id = :game_id')->execute([':game_id' => $gameId]);
+            $this->pdo->prepare('DELETE FROM moves WHERE game_id = :game_id')->execute([':game_id' => $gameId]);
+            $this->pdo->prepare('DELETE FROM game_players WHERE game_id = :game_id')->execute([':game_id' => $gameId]);
+            $this->pdo->prepare("UPDATE games SET status = 'waiting_setup', current_turn_index = 0, winner_id = NULL WHERE game_id = :game_id")->execute([':game_id' => $gameId]);
 
             $this->pdo->commit();
             Response::json(200, ['status' => 'reset']);
@@ -84,7 +59,7 @@ class TestController
         try {
             $stmt = $this->pdo->prepare('SELECT grid_size, status FROM games WHERE game_id = :game_id FOR UPDATE');
             $stmt->execute([':game_id' => $gameId]);
-            $game = $stmt->fetch(PDO::FETCH_ASSOC);
+            $game = $stmt->fetch();
             if (!$game) {
                 $this->pdo->rollBack();
                 Response::error(404, 'not_found', 'Game not found.');
@@ -112,11 +87,13 @@ class TestController
 
             $gridSize = (int)$game['grid_size'];
             $coordinates = [];
+
             foreach ($ships as $ship) {
                 if (is_array($ship) && array_key_exists('row', $ship) && array_key_exists('col', $ship)) {
                     $coordinates[] = ['row' => (int)$ship['row'], 'col' => (int)$ship['col']];
                     continue;
                 }
+
                 if (is_array($ship) && isset($ship['coordinates']) && is_array($ship['coordinates'])) {
                     foreach ($ship['coordinates'] as $coordinate) {
                         if (!is_array($coordinate) || count($coordinate) !== 2 || !is_numeric($coordinate[0]) || !is_numeric($coordinate[1])) {
@@ -127,6 +104,7 @@ class TestController
                     }
                     continue;
                 }
+
                 $this->pdo->rollBack();
                 Response::error(400, 'bad_request', 'Invalid ship format.');
             }
@@ -141,16 +119,19 @@ class TestController
             foreach ($coordinates as $coordinate) {
                 $row = $coordinate['row'];
                 $col = $coordinate['col'];
+
                 if ($row < 0 || $col < 0 || $row >= $gridSize || $col >= $gridSize) {
                     $this->pdo->rollBack();
                     Response::error(400, 'bad_request', 'Ship out of bounds.');
                 }
+
                 $key = $row . ',' . $col;
                 if (isset($seen[$key])) {
                     $this->pdo->rollBack();
                     Response::error(400, 'bad_request', 'Ship overlap.');
                 }
                 $seen[$key] = true;
+
                 $insert->execute([
                     ':game_id' => $gameId,
                     ':player_id' => $playerId,
@@ -200,7 +181,7 @@ class TestController
 
         $gameStmt = $this->pdo->prepare('SELECT grid_size FROM games WHERE game_id = :game_id');
         $gameStmt->execute([':game_id' => $gameId]);
-        $game = $gameStmt->fetch(PDO::FETCH_ASSOC);
+        $game = $gameStmt->fetch();
         if (!$game) {
             Response::error(404, 'not_found', 'Game not found.');
         }
@@ -220,7 +201,7 @@ class TestController
             ':game_id' => $gameId,
             ':player_id' => $playerId,
         ]);
-        $ships = $shipStmt->fetchAll(PDO::FETCH_ASSOC);
+        $ships = $shipStmt->fetchAll();
 
         $shipMap = [];
         $shipPositions = [];
@@ -232,7 +213,7 @@ class TestController
 
         $hitStmt = $this->pdo->prepare("SELECT row_idx, col_idx FROM moves WHERE game_id = :game_id AND result = 'hit'");
         $hitStmt->execute([':game_id' => $gameId]);
-        $hitRows = $hitStmt->fetchAll(PDO::FETCH_ASSOC);
+        $hitRows = $hitStmt->fetchAll();
         $hitMap = [];
         foreach ($hitRows as $row) {
             $hitMap[$row['row_idx'] . ',' . $row['col_idx']] = true;
@@ -240,7 +221,7 @@ class TestController
 
         $missStmt = $this->pdo->prepare("SELECT row_idx, col_idx FROM moves WHERE game_id = :game_id AND result = 'miss'");
         $missStmt->execute([':game_id' => $gameId]);
-        $missRows = $missStmt->fetchAll(PDO::FETCH_ASSOC);
+        $missRows = $missStmt->fetchAll();
         $missMap = [];
         foreach ($missRows as $row) {
             $missMap[$row['row_idx'] . ',' . $row['col_idx']] = true;
@@ -274,6 +255,44 @@ class TestController
             'ship_positions' => $shipPositions,
             'hits' => array_map(fn($r) => [(int)$r['row_idx'], (int)$r['col_idx']], $hitRows),
             'misses' => array_map(fn($r) => [(int)$r['row_idx'], (int)$r['col_idx']], $missRows),
+        ]);
+    }
+
+    public function resetGame(int $gameId): void
+    {
+        $this->restartGame($gameId);
+    }
+
+    public function setTurn(int $gameId): void
+    {
+        $this->requireTestPassword();
+
+        $body = Utils::getJsonBody();
+        $playerId = Utils::getInt($body, ['playerId', 'player_id']);
+        if ($playerId === null) {
+            Response::error(400, 'bad_request', 'playerId is required.');
+        }
+
+        $stmt = $this->pdo->prepare('SELECT turn_order FROM game_players WHERE game_id = :game_id AND player_id = :player_id');
+        $stmt->execute([
+            ':game_id' => $gameId,
+            ':player_id' => $playerId,
+        ]);
+        $row = $stmt->fetch();
+        if (!$row) {
+            Response::error(404, 'not_found', 'Player not found in game.');
+        }
+
+        $update = $this->pdo->prepare('UPDATE games SET current_turn_index = :turn_order WHERE game_id = :game_id');
+        $update->execute([
+            ':turn_order' => (int)$row['turn_order'],
+            ':game_id' => $gameId,
+        ]);
+
+        Response::json(200, [
+            'status' => 'turn set',
+            'player_id' => $playerId,
+            'playerId' => $playerId,
         ]);
     }
 }

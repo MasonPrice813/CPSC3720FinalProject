@@ -41,32 +41,38 @@ class GameController
             Response::error(400, 'bad_request', 'Username may only contain letters, numbers, and underscores.');
         }
 
-        $existing = $this->pdo->prepare('SELECT player_id, total_games, total_wins, total_losses, total_shots, total_hits FROM players WHERE LOWER(display_name) = LOWER(:u) LIMIT 1');
+        $existing = $this->pdo->prepare('SELECT player_id, display_name FROM players WHERE LOWER(display_name) = LOWER(:u) LIMIT 1');
         $existing->execute([':u' => $username]);
-        $row = $existing->fetch(PDO::FETCH_ASSOC);
+        $row = $existing->fetch();
         if ($row) {
-            // Preserve the original assignment behavior: duplicates are conflicts.
             Response::error(409, 'conflict', 'Username already exists.', [
                 'player_id' => (int)$row['player_id'],
-                'username' => $username,
+                'username' => $row['display_name'],
             ]);
         }
 
-        $stmt = $this->pdo->prepare('INSERT INTO players (display_name) VALUES (:display_name) RETURNING player_id');
-        $stmt->execute([':display_name' => $username]);
-        $playerId = (int)$stmt->fetchColumn();
+        try {
+            $stmt = $this->pdo->prepare('INSERT INTO players (display_name) VALUES (:display_name) RETURNING player_id');
+            $stmt->execute([':display_name' => $username]);
+            $playerId = (int)$stmt->fetchColumn();
 
-        Response::json(201, [
-            'player_id' => $playerId,
-            'username' => $username,
-        ]);
+            Response::json(201, [
+                'player_id' => $playerId,
+                'username' => $username,
+            ]);
+        } catch (PDOException $e) {
+            if ($e->getCode() === '23505') {
+                Response::error(409, 'conflict', 'Username already exists.');
+            }
+            throw $e;
+        }
     }
 
     public function listPlayers(): void
     {
         $stmt = $this->pdo->query('SELECT player_id, display_name FROM players ORDER BY player_id ASC');
         $players = [];
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        foreach ($stmt->fetchAll() as $row) {
             $players[] = [
                 'player_id' => (int)$row['player_id'],
                 'username' => $row['display_name'],
@@ -118,57 +124,43 @@ class GameController
         if ($creatorId === null || $gridSize === null || $maxPlayers === null) {
             Response::error(400, 'bad_request', 'creator_id, grid_size, and max_players are required integers.');
         }
+
         if ($gridSize < 5 || $gridSize > 15) {
             Response::error(400, 'bad_request', 'grid_size must be between 5 and 15.');
         }
+
         if ($maxPlayers < 2) {
             Response::error(400, 'bad_request', 'max_players must be at least 2.');
         }
 
-        $creator = $this->getPlayerRow($creatorId);
-        if (!$creator) {
+        $creatorCheck = $this->pdo->prepare('SELECT player_id FROM players WHERE player_id = :id');
+        $creatorCheck->execute([':id' => $creatorId]);
+        if (!$creatorCheck->fetch()) {
             Response::error(400, 'bad_request', 'creator_id does not refer to an existing player.');
         }
 
-        $this->pdo->beginTransaction();
-        try {
-            $stmt = $this->pdo->prepare("INSERT INTO games (grid_size, max_players, status, current_turn_index) VALUES (:grid_size, :max_players, 'waiting_setup', 0) RETURNING game_id");
-            $stmt->execute([
-                ':grid_size' => $gridSize,
-                ':max_players' => $maxPlayers,
-            ]);
-            $gameId = (int)$stmt->fetchColumn();
+        $stmt = $this->pdo->prepare("INSERT INTO games (grid_size, max_players, status, current_turn_index) VALUES (:grid_size, :max_players, 'waiting_setup', 0) RETURNING game_id");
+        $stmt->execute([
+            ':grid_size' => $gridSize,
+            ':max_players' => $maxPlayers,
+        ]);
+        $gameId = (int)$stmt->fetchColumn();
 
-            // Keep the creator auto-join behavior because the current passing setup assumes it.
-            $joinStmt = $this->pdo->prepare('INSERT INTO game_players (game_id, player_id, turn_order) VALUES (:game_id, :player_id, 0)');
-            $joinStmt->execute([
-                ':game_id' => $gameId,
-                ':player_id' => $creatorId,
-            ]);
-
-            $this->pdo->commit();
-
-            Response::json(201, [
-                'game_id' => $gameId,
-                'grid_size' => $gridSize,
-                'max_players' => $maxPlayers,
-                'status' => 'waiting_setup',
-                'active_players' => 1,
-                'creator_id' => $creatorId,
-            ]);
-        } catch (Throwable $e) {
-            if ($this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
-            }
-            throw $e;
-        }
+        Response::json(201, [
+            'game_id' => $gameId,
+            'grid_size' => $gridSize,
+            'max_players' => $maxPlayers,
+            'status' => 'waiting_setup',
+            'active_players' => 0,
+            'creator_id' => $creatorId,
+        ]);
     }
 
     public function listGames(): void
     {
         $stmt = $this->pdo->query('SELECT game_id, grid_size, max_players, status FROM games ORDER BY game_id ASC');
         $games = [];
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        foreach ($stmt->fetchAll() as $row) {
             $games[] = [
                 'game_id' => (int)$row['game_id'],
                 'grid_size' => (int)$row['grid_size'],
@@ -183,67 +175,56 @@ class GameController
     {
         $body = Utils::getJsonBody();
         $playerId = Utils::getInt($body, ['player_id', 'playerId']);
+
         if ($playerId === null) {
             Response::error(400, 'bad_request', 'player_id required.');
         }
 
-        if ($gameId <= 0) {
+        $gameStmt = $this->pdo->prepare('SELECT * FROM games WHERE game_id = :game_id');
+        $gameStmt->execute([':game_id' => $gameId]);
+        $game = $gameStmt->fetch();
+        if (!$game) {
             Response::error(404, 'not_found', 'Game not found.');
         }
 
-        if (!$this->getPlayerRow($playerId)) {
+        $playerCheck = $this->pdo->prepare('SELECT player_id FROM players WHERE player_id = :id');
+        $playerCheck->execute([':id' => $playerId]);
+        if (!$playerCheck->fetch()) {
             Response::error(404, 'not_found', 'Player not found.');
         }
 
-        $this->pdo->beginTransaction();
-        try {
-            $gameStmt = $this->pdo->prepare('SELECT * FROM games WHERE game_id = :game_id FOR UPDATE');
-            $gameStmt->execute([':game_id' => $gameId]);
-            $game = $gameStmt->fetch(PDO::FETCH_ASSOC);
-            if (!$game) {
-                $this->pdo->rollBack();
-                Response::error(404, 'not_found', 'Game not found.');
-            }
-
-            if ($game['status'] !== 'waiting_setup') {
-                $this->pdo->rollBack();
-                Response::error(400, 'bad_request', 'Game already started.');
-            }
-
-            $dupStmt = $this->pdo->prepare('SELECT COUNT(*) FROM game_players WHERE game_id = :game_id AND player_id = :player_id');
-            $dupStmt->execute([':game_id' => $gameId, ':player_id' => $playerId]);
-            if ((int)$dupStmt->fetchColumn() > 0) {
-                $this->pdo->rollBack();
-                Response::error(400, 'bad_request', 'Player already joined this game.');
-            }
-
-            $countStmt = $this->pdo->prepare('SELECT COUNT(*) FROM game_players WHERE game_id = :game_id');
-            $countStmt->execute([':game_id' => $gameId]);
-            $currentPlayers = (int)$countStmt->fetchColumn();
-            if ($currentPlayers >= (int)$game['max_players']) {
-                $this->pdo->rollBack();
-                Response::error(400, 'bad_request', 'Game is full.');
-            }
-
-            $insert = $this->pdo->prepare('INSERT INTO game_players (game_id, player_id, turn_order) VALUES (:game_id, :player_id, :turn_order)');
-            $insert->execute([
-                ':game_id' => $gameId,
-                ':player_id' => $playerId,
-                ':turn_order' => $currentPlayers,
-            ]);
-
-            $this->pdo->commit();
-            Response::json(200, [
-                'status' => 'joined',
-                'game_id' => $gameId,
-                'player_id' => $playerId,
-            ]);
-        } catch (Throwable $e) {
-            if ($this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
-            }
-            throw $e;
+        if ($game['status'] !== 'waiting_setup') {
+            Response::error(400, 'bad_request', 'Game already started.');
         }
+
+        $duplicateStmt = $this->pdo->prepare('SELECT COUNT(*) FROM game_players WHERE game_id = :game_id AND player_id = :player_id');
+        $duplicateStmt->execute([
+            ':game_id' => $gameId,
+            ':player_id' => $playerId,
+        ]);
+        if ((int)$duplicateStmt->fetchColumn() > 0) {
+            Response::error(400, 'bad_request', 'Player already joined this game.');
+        }
+
+        $countStmt = $this->pdo->prepare('SELECT COUNT(*) FROM game_players WHERE game_id = :game_id');
+        $countStmt->execute([':game_id' => $gameId]);
+        $currentPlayers = (int)$countStmt->fetchColumn();
+        if ($currentPlayers >= (int)$game['max_players']) {
+            Response::error(400, 'bad_request', 'Game is full.');
+        }
+
+        $insert = $this->pdo->prepare('INSERT INTO game_players (game_id, player_id, turn_order) VALUES (:game_id, :player_id, :turn_order)');
+        $insert->execute([
+            ':game_id' => $gameId,
+            ':player_id' => $playerId,
+            ':turn_order' => $currentPlayers,
+        ]);
+
+        Response::json(200, [
+            'status' => 'joined',
+            'game_id' => $gameId,
+            'player_id' => $playerId,
+        ]);
     }
 
     public function getGame(int $gameId): void
@@ -251,6 +232,7 @@ class GameController
         if ($gameId <= 0) {
             Response::error(404, 'not_found', 'Game not found.');
         }
+
         $game = $this->getGameRow($gameId);
         if (!$game) {
             Response::error(404, 'not_found', 'Game not found.');
@@ -258,11 +240,24 @@ class GameController
 
         $playersStmt = $this->pdo->prepare('SELECT gp.player_id, gp.turn_order, p.display_name FROM game_players gp JOIN players p ON p.player_id = gp.player_id WHERE gp.game_id = :game_id ORDER BY gp.turn_order ASC');
         $playersStmt->execute([':game_id' => $gameId]);
-        $playerRows = $playersStmt->fetchAll(PDO::FETCH_ASSOC);
+        $playerRows = $playersStmt->fetchAll();
 
         $players = [];
         foreach ($playerRows as $row) {
-            $remainingStmt = $this->pdo->prepare("SELECT COUNT(*) FROM ships s WHERE s.game_id = :game_id AND s.player_id = :player_id AND NOT EXISTS (SELECT 1 FROM moves m WHERE m.game_id = s.game_id AND m.row_idx = s.row_idx AND m.col_idx = s.col_idx AND m.result = 'hit')");
+            $remainingStmt = $this->pdo->prepare("
+                SELECT COUNT(*)
+                FROM ships s
+                WHERE s.game_id = :game_id
+                  AND s.player_id = :player_id
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM moves m
+                      WHERE m.game_id = s.game_id
+                        AND m.row_idx = s.row_idx
+                        AND m.col_idx = s.col_idx
+                        AND m.result = 'hit'
+                  )
+            ");
             $remainingStmt->execute([
                 ':game_id' => $gameId,
                 ':player_id' => (int)$row['player_id'],
@@ -296,6 +291,7 @@ class GameController
             'players' => $players,
             'total_moves' => $totalMoves,
         ];
+
         if ($game['winner_id'] !== null) {
             $response['winner_id'] = (int)$game['winner_id'];
         }
@@ -315,47 +311,43 @@ class GameController
         if (!is_array($ships)) {
             Response::error(400, 'bad_request', 'ships must be an array.');
         }
+
+        $gameStmt = $this->pdo->prepare('SELECT * FROM games WHERE game_id = :game_id');
+        $gameStmt->execute([':game_id' => $gameId]);
+        $game = $gameStmt->fetch();
+        if (!$game) {
+            Response::error(404, 'not_found', 'Game not found.');
+        }
+
         $this->requireExistingPlayer($playerId);
 
+        if ($game['status'] !== 'waiting_setup') {
+            Response::error(409, 'conflict', 'Ships can only be placed while the game is in setup.');
+        }
+        if (!$this->playerInGame($gameId, $playerId)) {
+            Response::error(400, 'bad_request', 'Player is not in this game.');
+        }
+        if ($this->playerAlreadyPlacedShips($gameId, $playerId)) {
+            Response::error(409, 'conflict', 'Ships already placed for this player.');
+        }
+
+        $coordinates = [];
+        foreach ($ships as $ship) {
+            if (is_array($ship) && array_key_exists('row', $ship) && array_key_exists('col', $ship)) {
+                $coordinates[] = ['row' => (int)$ship['row'], 'col' => (int)$ship['col']];
+                continue;
+            }
+            Response::error(400, 'bad_request', 'Ships must be objects with row and col fields.');
+        }
+
+        if (count($coordinates) !== 3) {
+            Response::error(400, 'bad_request', 'Exactly 3 ship coordinates are required.');
+        }
+
+        $gridSize = (int)$game['grid_size'];
+        $seen = [];
         $this->pdo->beginTransaction();
         try {
-            $gameStmt = $this->pdo->prepare('SELECT * FROM games WHERE game_id = :game_id FOR UPDATE');
-            $gameStmt->execute([':game_id' => $gameId]);
-            $game = $gameStmt->fetch(PDO::FETCH_ASSOC);
-            if (!$game) {
-                $this->pdo->rollBack();
-                Response::error(404, 'not_found', 'Game not found.');
-            }
-            if ($game['status'] !== 'waiting_setup') {
-                $this->pdo->rollBack();
-                Response::error(409, 'conflict', 'Ships can only be placed while the game is in setup.');
-            }
-            if (!$this->playerInGame($gameId, $playerId)) {
-                $this->pdo->rollBack();
-                Response::error(400, 'bad_request', 'Player is not in this game.');
-            }
-            if ($this->playerAlreadyPlacedShips($gameId, $playerId)) {
-                $this->pdo->rollBack();
-                Response::error(409, 'conflict', 'Ships already placed for this player.');
-            }
-
-            $coordinates = [];
-            foreach ($ships as $ship) {
-                if (is_array($ship) && array_key_exists('row', $ship) && array_key_exists('col', $ship)) {
-                    $coordinates[] = ['row' => (int)$ship['row'], 'col' => (int)$ship['col']];
-                    continue;
-                }
-                $this->pdo->rollBack();
-                Response::error(400, 'bad_request', 'Ships must be objects with row and col fields.');
-            }
-
-            if (count($coordinates) !== 3) {
-                $this->pdo->rollBack();
-                Response::error(400, 'bad_request', 'Exactly 3 ship coordinates are required.');
-            }
-
-            $gridSize = (int)$game['grid_size'];
-            $seen = [];
             $insert = $this->pdo->prepare('INSERT INTO ships (game_id, player_id, row_idx, col_idx) VALUES (:game_id, :player_id, :row, :col)');
             foreach ($coordinates as $coordinate) {
                 $row = $coordinate['row'];
@@ -387,8 +379,10 @@ class GameController
             }
 
             $this->pdo->commit();
+
             Response::json(200, [
                 'status' => 'placed',
+                'message' => 'ok',
                 'game_id' => $gameId,
                 'player_id' => $playerId,
             ]);
@@ -410,25 +404,30 @@ class GameController
         if ($playerId === null || $row === null || $col === null) {
             Response::error(400, 'bad_request', 'player_id, row, and col are required integers.');
         }
+
         $this->requireExistingPlayer($playerId);
 
         $this->pdo->beginTransaction();
         try {
             $gameStmt = $this->pdo->prepare('SELECT * FROM games WHERE game_id = :game_id FOR UPDATE');
             $gameStmt->execute([':game_id' => $gameId]);
-            $game = $gameStmt->fetch(PDO::FETCH_ASSOC);
+            $game = $gameStmt->fetch();
+
             if (!$game) {
                 $this->pdo->rollBack();
                 Response::error(404, 'not_found', 'Game not found.');
             }
+
             if (!$this->playerInGame($gameId, $playerId)) {
                 $this->pdo->rollBack();
                 Response::error(403, 'forbidden', 'Player is not in this game.');
             }
+
             if ($game['status'] === 'finished') {
                 $this->pdo->rollBack();
                 Response::error(400, 'bad_request', 'Game already finished.');
             }
+
             if ($game['status'] !== 'playing') {
                 $this->pdo->rollBack();
                 Response::error(400, 'bad_request', 'Game is not in playing state.');
@@ -440,7 +439,6 @@ class GameController
                 Response::error(400, 'bad_request', 'Shot out of bounds.');
             }
 
-            // Duplicate check before turn check so duplicates consistently return 409.
             $dupStmt = $this->pdo->prepare('SELECT COUNT(*) FROM moves WHERE game_id = :game_id AND row_idx = :row AND col_idx = :col');
             $dupStmt->execute([
                 ':game_id' => $gameId,
@@ -455,15 +453,14 @@ class GameController
             $currentPlayerId = $this->getCurrentTurnPlayerId($gameId);
             if ($currentPlayerId === null || $currentPlayerId !== $playerId) {
                 $this->pdo->rollBack();
-                Response::error(403, 'forbidden', 'not your turn');
+                Response::error(403, 'forbidden', 'Not your turn.');
             }
 
-            $hitStmt = $this->pdo->prepare('SELECT player_id FROM ships WHERE game_id = :game_id AND row_idx = :row AND col_idx = :col AND player_id <> :player_id LIMIT 1');
+            $hitStmt = $this->pdo->prepare('SELECT player_id FROM ships WHERE game_id = :game_id AND row_idx = :row AND col_idx = :col LIMIT 1');
             $hitStmt->execute([
                 ':game_id' => $gameId,
                 ':row' => $row,
                 ':col' => $col,
-                ':player_id' => $playerId,
             ]);
             $hitShipOwner = $hitStmt->fetchColumn();
             $result = $hitShipOwner !== false ? 'hit' : 'miss';
@@ -511,6 +508,7 @@ class GameController
             $nextPlayerId = $this->getPlayerIdByTurnOrder($gameId, $nextIndex);
 
             $this->pdo->commit();
+
             Response::json(200, [
                 'result' => $result,
                 'next_player_id' => $nextPlayerId,
@@ -531,6 +529,7 @@ class GameController
         if ($gameId <= 0) {
             Response::error(404, 'not_found', 'Game not found.');
         }
+
         $game = $this->getGameRow($gameId);
         if (!$game) {
             Response::error(404, 'not_found', 'Game not found.');
@@ -540,53 +539,53 @@ class GameController
         $stmt->execute([':game_id' => $gameId]);
 
         $moves = [];
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        foreach ($stmt->fetchAll() as $row) {
             $moves[] = [
                 'move_id' => (int)$row['move_id'],
                 'player_id' => (int)$row['player_id'],
                 'row' => (int)$row['row_idx'],
                 'col' => (int)$row['col_idx'],
                 'result' => $row['result'],
-                'timestamp' => $row['created_at'],
                 'created_at' => $row['created_at'],
             ];
         }
 
-        Response::json(200, [
-            'game_id' => $gameId,
-            'moves' => $moves,
-        ]);
+        Response::json(200, ['moves' => $moves]);
+    }
+
+    private function getPlayerRow(int $playerId): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT player_id, display_name, total_games, total_wins, total_losses, total_shots, total_hits FROM players WHERE player_id = :player_id');
+        $stmt->execute([':player_id' => $playerId]);
+        $row = $stmt->fetch();
+        return $row ?: null;
+    }
+
+    private function getGameRow(int $gameId): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT game_id, grid_size, max_players, status, current_turn_index, winner_id FROM games WHERE game_id = :game_id');
+        $stmt->execute([':game_id' => $gameId]);
+        $row = $stmt->fetch();
+        return $row ?: null;
     }
 
     private function requireExistingPlayer(int $playerId): void
     {
-        if (!$this->getPlayerRow($playerId)) {
+        $stmt = $this->pdo->prepare('SELECT 1 FROM players WHERE player_id = :player_id');
+        $stmt->execute([':player_id' => $playerId]);
+        if (!$stmt->fetch()) {
             Response::error(404, 'not_found', 'Player not found.');
         }
     }
 
-    private function getPlayerRow(int $playerId): array|false
-    {
-        $stmt = $this->pdo->prepare('SELECT * FROM players WHERE player_id = :player_id');
-        $stmt->execute([':player_id' => $playerId]);
-        return $stmt->fetch(PDO::FETCH_ASSOC);
-    }
-
-    private function getGameRow(int $gameId): array|false
-    {
-        $stmt = $this->pdo->prepare('SELECT * FROM games WHERE game_id = :game_id');
-        $stmt->execute([':game_id' => $gameId]);
-        return $stmt->fetch(PDO::FETCH_ASSOC);
-    }
-
     private function playerInGame(int $gameId, int $playerId): bool
     {
-        $stmt = $this->pdo->prepare('SELECT COUNT(*) FROM game_players WHERE game_id = :game_id AND player_id = :player_id');
+        $stmt = $this->pdo->prepare('SELECT 1 FROM game_players WHERE game_id = :game_id AND player_id = :player_id');
         $stmt->execute([
             ':game_id' => $gameId,
             ':player_id' => $playerId,
         ]);
-        return (int)$stmt->fetchColumn() > 0;
+        return (bool)$stmt->fetch();
     }
 
     private function playerAlreadyPlacedShips(int $gameId, int $playerId): bool
@@ -604,23 +603,38 @@ class GameController
         $playerCountStmt = $this->pdo->prepare('SELECT COUNT(*) FROM game_players WHERE game_id = :game_id');
         $playerCountStmt->execute([':game_id' => $gameId]);
         $playerCount = (int)$playerCountStmt->fetchColumn();
+
         if ($playerCount < 2) {
             return false;
         }
 
-        $placedCountStmt = $this->pdo->prepare('SELECT COUNT(*) FROM (SELECT gp.player_id FROM game_players gp LEFT JOIN ships s ON s.game_id = gp.game_id AND s.player_id = gp.player_id WHERE gp.game_id = :game_id GROUP BY gp.player_id HAVING COUNT(s.row_idx) = 3) placed_players');
+        $placedCountStmt = $this->pdo->prepare("
+            SELECT COUNT(*) FROM (
+                SELECT gp.player_id
+                FROM game_players gp
+                LEFT JOIN ships s
+                  ON s.game_id = gp.game_id
+                 AND s.player_id = gp.player_id
+                WHERE gp.game_id = :game_id
+                GROUP BY gp.player_id
+                HAVING COUNT(s.row_idx) >= 3
+            ) placed_players
+        ");
         $placedCountStmt->execute([':game_id' => $gameId]);
-        return (int)$placedCountStmt->fetchColumn() === $playerCount;
+        $placedCount = (int)$placedCountStmt->fetchColumn();
+
+        return $placedCount === $playerCount;
     }
 
     private function getCurrentTurnPlayerId(int $gameId): ?int
     {
         $gameStmt = $this->pdo->prepare('SELECT current_turn_index FROM games WHERE game_id = :game_id');
         $gameStmt->execute([':game_id' => $gameId]);
-        $game = $gameStmt->fetch(PDO::FETCH_ASSOC);
+        $game = $gameStmt->fetch();
         if (!$game) {
             return null;
         }
+
         return $this->getPlayerIdByTurnOrder($gameId, (int)$game['current_turn_index']);
     }
 
@@ -628,7 +642,7 @@ class GameController
     {
         $gameStmt = $this->pdo->prepare('SELECT current_turn_index FROM games WHERE game_id = :game_id');
         $gameStmt->execute([':game_id' => $gameId]);
-        $game = $gameStmt->fetch(PDO::FETCH_ASSOC);
+        $game = $gameStmt->fetch();
 
         $countStmt = $this->pdo->prepare('SELECT COUNT(*) FROM game_players WHERE game_id = :game_id');
         $countStmt->execute([':game_id' => $gameId]);
@@ -637,6 +651,7 @@ class GameController
         if (!$game || $playerCount <= 0) {
             return 0;
         }
+
         return (((int)$game['current_turn_index']) + 1) % $playerCount;
     }
 
@@ -647,18 +662,33 @@ class GameController
             ':game_id' => $gameId,
             ':turn_order' => $turnOrder,
         ]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $row = $stmt->fetch();
         return $row ? (int)$row['player_id'] : null;
     }
 
     private function determineWinner(int $gameId): ?int
     {
-        $stmt = $this->pdo->prepare("SELECT s.player_id FROM ships s WHERE s.game_id = :game_id AND NOT EXISTS (SELECT 1 FROM moves m WHERE m.game_id = s.game_id AND m.row_idx = s.row_idx AND m.col_idx = s.col_idx AND m.result = 'hit') GROUP BY s.player_id");
+        $stmt = $this->pdo->prepare("
+            SELECT s.player_id
+            FROM ships s
+            WHERE s.game_id = :game_id
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM moves m
+                  WHERE m.game_id = s.game_id
+                    AND m.row_idx = s.row_idx
+                    AND m.col_idx = s.col_idx
+                    AND m.result = 'hit'
+              )
+            GROUP BY s.player_id
+        ");
         $stmt->execute([':game_id' => $gameId]);
-        $alive = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $alive = $stmt->fetchAll();
+
         if (count($alive) === 1) {
             return (int)$alive[0]['player_id'];
         }
+
         return null;
     }
 
@@ -667,7 +697,7 @@ class GameController
         $players = $this->pdo->prepare('SELECT player_id FROM game_players WHERE game_id = :game_id');
         $players->execute([':game_id' => $gameId]);
 
-        foreach ($players->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        foreach ($players->fetchAll() as $row) {
             $playerId = (int)$row['player_id'];
             $this->pdo->prepare('UPDATE players SET total_games = total_games + 1 WHERE player_id = :player_id')
                 ->execute([':player_id' => $playerId]);

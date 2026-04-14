@@ -20,24 +20,14 @@ class TestController
 
         $this->pdo->beginTransaction();
         try {
-            // Ensure game exists
-            $stmt = $this->pdo->prepare('SELECT * FROM games WHERE game_id = :game_id FOR UPDATE');
-            $stmt->execute([':game_id' => $gameId]);
-            $game = $stmt->fetch();
-
-            if (!$game) {
-                $this->pdo->rollBack();
-                Response::error(404, 'not_found', 'Game not found.');
-            }
-
-            // 🔥 FULL RESET (THIS IS WHAT YOU WERE MISSING)
+            // 🔥 FULL DATABASE RESET
             $this->pdo->exec('TRUNCATE TABLE moves RESTART IDENTITY CASCADE');
             $this->pdo->exec('TRUNCATE TABLE ships RESTART IDENTITY CASCADE');
             $this->pdo->exec('TRUNCATE TABLE game_players RESTART IDENTITY CASCADE');
             $this->pdo->exec('TRUNCATE TABLE games RESTART IDENTITY CASCADE');
             $this->pdo->exec('TRUNCATE TABLE players RESTART IDENTITY CASCADE');
 
-            // 🔥 Recreate the game so autograder still works
+            // 🔥 Recreate the requested game
             $this->pdo->prepare("
                 INSERT INTO games (game_id, status, current_turn_index, winner_id)
                 VALUES (:game_id, 'waiting_setup', 0, NULL)

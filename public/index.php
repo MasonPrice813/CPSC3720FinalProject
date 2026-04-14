@@ -15,25 +15,20 @@ try {
     Response::error(500, 'internal_error');
 }
 
-
 $method = $_SERVER['REQUEST_METHOD'];
 $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '/';
 
-// Accept a few literal placeholder-style paths used by some pool tests.
 $uri = str_replace(['{id}', ':id'], '1', $uri);
 $uri = str_replace(['{player_id}', ':player_id'], '1', $uri);
 
-// Remove /api prefix
 if (str_starts_with($uri, '/api')) {
     $uri = substr($uri, 4) ?: '/';
 }
 
-// Normalize trailing slash
 if ($uri !== '/' && str_ends_with($uri, '/')) {
     $uri = rtrim($uri, '/');
 }
 
-// Root
 if ($method === 'GET' && $uri === '/') {
     Response::json(200, [
         'service' => 'Battleship API',
@@ -41,22 +36,18 @@ if ($method === 'GET' && $uri === '/') {
     ]);
 }
 
-// Health
 if ($method === 'GET' && $uri === '/health') {
     Response::json(200, ['status' => 'ok']);
 }
 
-// Reset
 if ($method === 'POST' && $uri === '/reset') {
     $controller->resetSystem();
 }
 
-// Players list
 if ($method === 'GET' && $uri === '/players') {
     $controller->listPlayers();
 }
 
-// Players
 if ($method === 'POST' && $uri === '/players') {
     $controller->createPlayer();
 }
@@ -65,12 +56,10 @@ if ($method === 'GET' && preg_match('#^/players/([0-9]+)/stats$#', $uri, $matche
     $controller->getPlayerStats((int)$matches[1]);
 }
 
-// Games list
 if ($method === 'GET' && $uri === '/games') {
     $controller->listGames();
 }
 
-// Games
 if ($method === 'POST' && $uri === '/games') {
     $controller->createGame();
 }
@@ -95,12 +84,8 @@ if ($method === 'GET' && preg_match('#^/games/([0-9]+)/moves$#', $uri, $matches)
     $controller->getMoves((int)$matches[1]);
 }
 
-// Test routes — use TestMode::getTestPassword() for consistent header detection across Apache configs
 if (str_starts_with($uri, '/test/')) {
-    $testPassword = TestMode::getTestPassword();
-    if ($testPassword === null || !hash_equals('clemson-test-2026', (string)$testPassword)) {
-        Response::error(403, 'forbidden', 'Forbidden');
-    }
+    TestMode::requireTestMode();
 }
 
 if ($method === 'POST' && preg_match('#^/test/games/([0-9]+)/restart$#', $uri, $matches)) {
@@ -127,5 +112,4 @@ if ($method === 'POST' && preg_match('#^/test/games/([0-9]+)/set-turn$#', $uri, 
     $testController->setTurn((int)$matches[1]);
 }
 
-// Fallback
 Response::error(404, 'not_found');

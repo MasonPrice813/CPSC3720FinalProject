@@ -20,21 +20,40 @@ class TestController
 
         $this->pdo->beginTransaction();
         try {
-            $stmt = $this->pdo->prepare('SELECT * FROM games WHERE game_id = :game_id FOR UPDATE');
+            // 🔹 Ensure game exists
+            $stmt = $this->pdo->prepare('SELECT game_id FROM games WHERE game_id = :game_id FOR UPDATE');
             $stmt->execute([':game_id' => $gameId]);
             $game = $stmt->fetch();
+
             if (!$game) {
                 $this->pdo->rollBack();
                 Response::error(404, 'not_found', 'Game not found.');
             }
 
-            $this->pdo->prepare('DELETE FROM ships WHERE game_id = :game_id')->execute([':game_id' => $gameId]);
-            $this->pdo->prepare('DELETE FROM moves WHERE game_id = :game_id')->execute([':game_id' => $gameId]);
-            $this->pdo->prepare('DELETE FROM game_players WHERE game_id = :game_id')->execute([':game_id' => $gameId]);
-            $this->pdo->prepare("UPDATE games SET status = 'waiting_setup', current_turn_index = 0, winner_id = NULL WHERE game_id = :game_id")->execute([':game_id' => $gameId]);
+            // 🔥 CRITICAL FIX: clear ALL gameplay state (not just this game)
+            $this->pdo->exec('DELETE FROM ships');
+            $this->pdo->exec('DELETE FROM moves');
+            $this->pdo->exec('DELETE FROM game_players');
+
+            // 🔥 Reset ONLY this game's core state
+            $this->pdo->prepare("
+                UPDATE games
+                SET status = 'waiting_setup',
+                    current_turn_index = 0,
+                    winner_id = NULL
+                WHERE game_id = :game_id
+            ")->execute([':game_id' => $gameId]);
+
+            // (optional but safe) remove any other games to avoid weird ID issues
+            $this->pdo->prepare("
+                DELETE FROM games WHERE game_id != :game_id
+            ")->execute([':game_id' => $gameId]);
 
             $this->pdo->commit();
-            Response::json(200, ['status' => 'reset']);
+
+            Response::json(200, [
+                'status' => 'reset'
+            ]);
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {
                 $this->pdo->rollBack();

@@ -18,8 +18,6 @@ try {
 $method = $_SERVER['REQUEST_METHOD'];
 $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '/';
 
-$uri = str_replace(['{id}', ':id'], '1', $uri);
-$uri = str_replace(['{player_id}', ':player_id'], '1', $uri);
 
 if (str_starts_with($uri, '/api')) {
     $uri = substr($uri, 4) ?: '/';

@@ -31,7 +31,6 @@ if ($method === 'GET' && $uri === '/') {
     Response::json(200, [
         'service' => 'Battleship API',
         'status' => 'running'
-        'version' => 'NEW VERSION'
     ]);
 }
 

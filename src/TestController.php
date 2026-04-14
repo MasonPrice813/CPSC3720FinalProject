@@ -22,19 +22,59 @@ class TestController
         try {
             $stmt = $this->pdo->prepare('SELECT * FROM games WHERE game_id = :game_id FOR UPDATE');
             $stmt->execute([':game_id' => $gameId]);
-            if (!$stmt->fetch()) {
+            $game = $stmt->fetch();
+            if (!$game) {
                 $this->pdo->rollBack();
                 Response::error(404, 'not_found', 'Game not found.');
             }
 
-            // Clear all per-game state so every autograder test starts from a clean board/table state.
-            $this->pdo->exec('TRUNCATE TABLE moves, ships, game_players, games RESTART IDENTITY CASCADE');
+            $playersStmt = $this->pdo->prepare(
+                'SELECT p.*
+                   FROM players p
+                   JOIN game_players gp ON gp.player_id = p.player_id
+                  WHERE gp.game_id = :game_id
+                  ORDER BY p.player_id ASC'
+            );
+            $playersStmt->execute([':game_id' => $gameId]);
+            $players = $playersStmt->fetchAll();
 
-            // Remove idle players left over from old tests while preserving any players that have accumulated stats.
-            $this->pdo->exec("DELETE FROM players WHERE total_games = 0 AND total_wins = 0 AND total_losses = 0 AND total_shots = 0 AND total_hits = 0");
+            $gridSize = (int)$game['grid_size'];
+            $maxPlayers = (int)$game['max_players'];
 
-            // Keep player ids stable and low for the next test run.
-            $this->pdo->exec("SELECT setval(pg_get_serial_sequence('players', 'player_id'), COALESCE((SELECT MAX(player_id) FROM players), 1), true)");
+            $this->pdo->exec('TRUNCATE TABLE moves, ships, game_players, games, players RESTART IDENTITY CASCADE');
+
+            if (!empty($players)) {
+                $insertPlayer = $this->pdo->prepare(
+                    'INSERT INTO players (player_id, display_name, total_games, total_wins, total_losses, total_shots, total_hits)
+                     VALUES (:player_id, :display_name, :total_games, :total_wins, :total_losses, :total_shots, :total_hits)'
+                );
+                $maxPlayerId = 0;
+                foreach ($players as $player) {
+                    $pid = (int)$player['player_id'];
+                    $maxPlayerId = max($maxPlayerId, $pid);
+                    $insertPlayer->execute([
+                        ':player_id' => $pid,
+                        ':display_name' => $player['display_name'],
+                        ':total_games' => (int)$player['total_games'],
+                        ':total_wins' => (int)$player['total_wins'],
+                        ':total_losses' => (int)$player['total_losses'],
+                        ':total_shots' => (int)$player['total_shots'],
+                        ':total_hits' => (int)$player['total_hits'],
+                    ]);
+                }
+                $this->pdo->exec("SELECT setval(pg_get_serial_sequence('players', 'player_id'), {$maxPlayerId}, true)");
+            }
+
+            $insertGame = $this->pdo->prepare(
+                "INSERT INTO games (game_id, grid_size, max_players, status, current_turn_index, winner_id)
+                 VALUES (:game_id, :grid_size, :max_players, 'waiting_setup', 0, NULL)"
+            );
+            $insertGame->execute([
+                ':game_id' => $gameId,
+                ':grid_size' => $gridSize,
+                ':max_players' => $maxPlayers,
+            ]);
+            $this->pdo->exec("SELECT setval(pg_get_serial_sequence('games', 'game_id'), {$gameId}, true)");
 
             $this->pdo->commit();
             Response::json(200, ['status' => 'reset']);

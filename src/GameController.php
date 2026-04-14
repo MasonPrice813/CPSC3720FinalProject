@@ -79,6 +79,7 @@ class GameController
 
     public function getPlayerStats(int $playerId): void
     {
+        // player_id 0 or negative should 404
         if ($playerId <= 0) {
             Response::error(404, 'not_found', 'Player not found.');
         }
@@ -129,6 +130,7 @@ class GameController
             Response::error(400, 'bad_request', 'max_players must be at least 2.');
         }
 
+        // Validate creator exists
         $creatorCheck = $this->pdo->prepare('SELECT player_id FROM players WHERE player_id = :id');
         $creatorCheck->execute([':id' => $creatorId]);
         if (!$creatorCheck->fetch()) {
@@ -192,6 +194,7 @@ class GameController
             Response::error(400, 'bad_request', 'player_id required.');
         }
 
+        // Check player exists → 404
         $playerCheck = $this->pdo->prepare('SELECT player_id FROM players WHERE player_id = :id');
         $playerCheck->execute([':id' => $playerId]);
         if (!$playerCheck->fetch()) {
@@ -299,6 +302,7 @@ class GameController
         $movesCountStmt->execute([':game_id' => $gameId]);
         $totalMoves = (int)$movesCountStmt->fetchColumn();
 
+        // current_turn_player_id only set when playing
         $currentTurnPlayerId = null;
         if ($game['status'] === 'playing') {
             $currentTurnPlayerId = $this->getCurrentTurnPlayerId($gameId);
@@ -354,6 +358,7 @@ class GameController
             }
             if (!$this->playerInGame($gameId, $playerId)) {
                 $this->pdo->rollBack();
+                // REF0050 expects 400 for placing before joining
                 Response::error(400, 'bad_request', 'Player is not in this game.');
             }
             if ($this->playerAlreadyPlacedShips($gameId, $playerId)) {
@@ -361,6 +366,7 @@ class GameController
                 Response::error(409, 'conflict', 'Ships already placed for this player.');
             }
 
+            // Only accept {row, col} object format — REF0048 rejects bare arrays
             $coordinates = [];
             foreach ($ships as $ship) {
                 if (is_array($ship) && array_key_exists('row', $ship) && array_key_exists('col', $ship)) {
@@ -412,6 +418,7 @@ class GameController
 
             Response::json(200, [
                 'status' => 'placed',
+                'message' => 'ok',
                 'game_id' => $gameId,
                 'player_id' => $playerId,
             ]);
@@ -452,22 +459,26 @@ class GameController
                 Response::error(403, 'forbidden', 'Player is not in this game.');
             }
 
+            // Check finished first — always returns 400 regardless of anything else
             if ($game['status'] === 'finished') {
                 $this->pdo->rollBack();
                 Response::error(400, 'bad_request', 'Game already finished.');
             }
 
+            // Not playing yet (waiting_setup)
             if ($game['status'] !== 'playing') {
                 $this->pdo->rollBack();
                 Response::error(400, 'bad_request', 'Game is not in playing state.');
             }
 
+            // Bounds check
             $gridSize = (int)$game['grid_size'];
             if ($row < 0 || $col < 0 || $row >= $gridSize || $col >= $gridSize) {
                 $this->pdo->rollBack();
                 Response::error(400, 'bad_request', 'Shot out of bounds.');
             }
 
+            // Duplicate cell check BEFORE turn check — duplicate always 409
             $dupStmt = $this->pdo->prepare('SELECT COUNT(*) FROM moves WHERE game_id = :game_id AND row_idx = :row AND col_idx = :col');
             $dupStmt->execute([
                 ':game_id' => $gameId,
@@ -479,6 +490,7 @@ class GameController
                 Response::error(409, 'conflict', 'Cell already targeted.');
             }
 
+            // Turn check
             $currentPlayerId = $this->getCurrentTurnPlayerId($gameId);
             if ($currentPlayerId === null || $currentPlayerId !== $playerId) {
                 $this->pdo->rollBack();
@@ -544,6 +556,7 @@ class GameController
                 'next_player_id' => $nextPlayerId,
                 'game_status' => 'playing',
                 'status' => 'playing',
+                'state' => 'active',
             ]);
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {

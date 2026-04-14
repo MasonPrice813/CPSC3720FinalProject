@@ -146,12 +146,22 @@ class GameController
         ]);
         $gameId = (int)$stmt->fetchColumn();
 
+        // 🔥 ADD CREATOR TO GAME_PLAYERS TABLE
+        $joinStmt = $this->pdo->prepare(
+            'INSERT INTO game_players (game_id, player_id, turn_order)
+            VALUES (:game_id, :player_id, 0)'
+        );
+        $joinStmt->execute([
+            ':game_id' => $gameId,
+            ':player_id' => $creatorId,
+        ]);
+
         Response::json(201, [
             'game_id' => $gameId,
             'grid_size' => $gridSize,
             'max_players' => $maxPlayers,
             'status' => 'waiting_setup',
-            'active_players' => 0,
+            'active_players' => 1,
             'creator_id' => $creatorId,
         ]);
     }

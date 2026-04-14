@@ -83,7 +83,7 @@ if ($method === 'GET' && preg_match('#^/games/([0-9]+)/moves$#', $uri, $matches)
 }
 
 if (str_starts_with($uri, '/test/')) {
-    TestMode::requireTestMode();
+    TestMode::requireTestPassword();
 }
 
 if ($method === 'POST' && preg_match('#^/test/games/([0-9]+)/restart$#', $uri, $matches)) {

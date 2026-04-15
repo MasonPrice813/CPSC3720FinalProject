@@ -20,21 +20,20 @@ class TestController
 
         $this->pdo->beginTransaction();
         try {
-            // 🔥 FULL DATABASE RESET
-            $this->pdo->exec('TRUNCATE TABLE moves RESTART IDENTITY CASCADE');
-            $this->pdo->exec('TRUNCATE TABLE ships RESTART IDENTITY CASCADE');
-            $this->pdo->exec('TRUNCATE TABLE game_players RESTART IDENTITY CASCADE');
-            $this->pdo->exec('TRUNCATE TABLE games RESTART IDENTITY CASCADE');
-            $this->pdo->exec('TRUNCATE TABLE players RESTART IDENTITY CASCADE');
+            $stmt = $this->pdo->prepare('SELECT * FROM games WHERE game_id = :game_id FOR UPDATE');
+            $stmt->execute([':game_id' => $gameId]);
+            $game = $stmt->fetch();
+            if (!$game) {
+                $this->pdo->rollBack();
+                Response::error(404, 'not_found', 'Game not found.');
+            }
 
-            // 🔥 Recreate the requested game
-            $this->pdo->prepare("
-                INSERT INTO games (game_id, status, current_turn_index, winner_id)
-                VALUES (:game_id, 'waiting_setup', 0, NULL)
-            ")->execute([':game_id' => $gameId]);
+            $this->pdo->prepare('DELETE FROM ships WHERE game_id = :game_id')->execute([':game_id' => $gameId]);
+            $this->pdo->prepare('DELETE FROM moves WHERE game_id = :game_id')->execute([':game_id' => $gameId]);
+            $this->pdo->prepare('DELETE FROM game_players WHERE game_id = :game_id')->execute([':game_id' => $gameId]);
+            $this->pdo->prepare("UPDATE games SET status = 'waiting_setup', current_turn_index = 0, winner_id = NULL WHERE game_id = :game_id")->execute([':game_id' => $gameId]);
 
             $this->pdo->commit();
-
             Response::json(200, ['status' => 'reset']);
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {

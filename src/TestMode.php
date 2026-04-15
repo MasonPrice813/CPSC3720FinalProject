@@ -29,14 +29,11 @@ class TestMode
         return null;
     }
 
-    public static function requireTestPassword(): void
+    public static function requireTestMode(): void
     {
-        $headers = getallheaders();
+        $provided = self::getTestPassword();
 
-        if (
-            !isset($headers['X-Test-Password']) ||
-            $headers['X-Test-Password'] !== 'clemson-test-2026'
-        ) {
+        if ($provided === null || !hash_equals('clemson-test-2026', (string)$provided)) {
             Response::error(403, 'forbidden', 'Forbidden');
         }
     }

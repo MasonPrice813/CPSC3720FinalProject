@@ -1,48 +1,40 @@
 <?php
 
-class Utils
+class TestMode
 {
-    public static function getJsonBody(): array
+    public static function getTestPassword(): ?string
     {
-        $raw = file_get_contents('php://input');
-        $trimmed = trim($raw);
+        $candidates = [
+            $_SERVER['HTTP_X_TEST_PASSWORD'] ?? null,
+            $_SERVER['REDIRECT_HTTP_X_TEST_PASSWORD'] ?? null,
+            $_SERVER['HTTP_X_TEST_MODE'] ?? null,
+            $_SERVER['REDIRECT_HTTP_X_TEST_MODE'] ?? null,
+        ];
 
-        if ($trimmed === '') {
-            return [];
+        if (function_exists('getallheaders')) {
+            foreach (getallheaders() as $name => $value) {
+                $lower = strtolower($name);
+                if ($lower === 'x-test-password' || $lower === 'x-test-mode') {
+                    $candidates[] = $value;
+                }
+            }
         }
 
-        $decoded = json_decode($raw, true);
-        if (!is_array($decoded)) {
-            Response::error(400, 'bad_request', 'Invalid JSON body.');
-        }
-
-        return $decoded;
-    }
-
-    public static function normalizeName(string $name): string
-    {
-        return trim($name);
-    }
-
-    public static function getInt(array $body, array $keys): ?int
-    {
-        foreach ($keys as $key) {
-            if (array_key_exists($key, $body) && is_int($body[$key])) {
-                return $body[$key];
+        foreach ($candidates as $candidate) {
+            if ($candidate !== null && $candidate !== '') {
+                return (string)$candidate;
             }
         }
 
         return null;
     }
 
-    public static function getString(array $body, array $keys): ?string
+    public static function requireTestMode(): void
     {
-        foreach ($keys as $key) {
-            if (array_key_exists($key, $body) && is_string($body[$key])) {
-                return $body[$key];
-            }
-        }
+        $provided = self::getTestPassword();
 
-        return null;
+        if ($provided === null || !hash_equals('clemson-test-2026', (string)$provided)) {
+            Response::error(403, 'forbidden', 'Forbidden');
+        }
     }
 }

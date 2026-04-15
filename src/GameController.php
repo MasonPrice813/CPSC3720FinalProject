@@ -146,22 +146,12 @@ class GameController
         ]);
         $gameId = (int)$stmt->fetchColumn();
 
-        // 🔥 ADD CREATOR TO GAME_PLAYERS TABLE
-        $joinStmt = $this->pdo->prepare(
-            'INSERT INTO game_players (game_id, player_id, turn_order)
-            VALUES (:game_id, :player_id, 0)'
-        );
-        $joinStmt->execute([
-            ':game_id' => $gameId,
-            ':player_id' => $creatorId,
-        ]);
-
         Response::json(201, [
             'game_id' => $gameId,
             'grid_size' => $gridSize,
             'max_players' => $maxPlayers,
             'status' => 'waiting_setup',
-            'active_players' => 1,
+            'active_players' => 0,
             'creator_id' => $creatorId,
         ]);
     }
@@ -212,30 +202,7 @@ class GameController
             ':game_id' => $gameId,
             ':player_id' => $playerId,
         ]);
-        
         if ((int)$duplicateStmt->fetchColumn() > 0) {
-            // 🔥 Check if this player is the creator (turn_order = 0)
-            $stmt = $this->pdo->prepare("
-                SELECT turn_order FROM game_players
-                WHERE game_id = :game_id AND player_id = :player_id
-            ");
-            $stmt->execute([
-                ':game_id' => $gameId,
-                ':player_id' => $playerId,
-            ]);
-
-            $row = $stmt->fetch();
-
-            if ($row && (int)$row['turn_order'] === 0) {
-                // ✅ ALLOW creator to "join again"
-                Response::json(200, [
-                    'status' => 'joined',
-                    'game_id' => $gameId,
-                    'player_id' => $playerId,
-                ]);
-            }
-
-            // ❌ Block everyone else
             Response::error(400, 'bad_request', 'Player already joined this game.');
         }
 
@@ -427,163 +394,135 @@ class GameController
         }
     }
 
-public function fire(int $gameId): void
-{
-    $body = Utils::getJsonBody();
-    $playerId = Utils::getInt($body, ['player_id', 'playerId']);
-    $row = Utils::getInt($body, ['row']);
-    $col = Utils::getInt($body, ['col']);
+    public function fire(int $gameId): void
+    {
+        $body = Utils::getJsonBody();
+        $playerId = Utils::getInt($body, ['player_id', 'playerId']);
+        $row = Utils::getInt($body, ['row']);
+        $col = Utils::getInt($body, ['col']);
 
-    if ($playerId === null || $row === null || $col === null) {
-        Response::error(400, 'bad_request', 'player_id, row, and col are required integers.');
-    }
-
-    $this->pdo->beginTransaction();
-    try {
-        // ✅ 1. Check game exists
-        $stmt = $this->pdo->prepare('SELECT * FROM games WHERE game_id = :game_id FOR UPDATE');
-        $stmt->execute([':game_id' => $gameId]);
-        $game = $stmt->fetch();
-
-        if (!$game) {
-            $this->pdo->rollBack();
-            Response::error(404, 'not_found', 'Game not found.');
+        if ($playerId === null || $row === null || $col === null) {
+            Response::error(400, 'bad_request', 'player_id, row, and col are required integers.');
         }
 
-        // ✅ 2. Check player exists
         $this->requireExistingPlayer($playerId);
 
-        // ✅ 3. Check player in game
-        if (!$this->playerInGame($gameId, $playerId)) {
-            $this->pdo->rollBack();
-            Response::error(403, 'forbidden', 'Player is not in this game.');
-        }
+        $this->pdo->beginTransaction();
+        try {
+            $gameStmt = $this->pdo->prepare('SELECT * FROM games WHERE game_id = :game_id FOR UPDATE');
+            $gameStmt->execute([':game_id' => $gameId]);
+            $game = $gameStmt->fetch();
 
-        // ✅ 4. Block finished game FIRST
-        if ($game['status'] === 'finished') {
-            $this->pdo->rollBack();
-            Response::error(400, 'bad_request', 'Game already finished.');
-        }
+            if (!$game) {
+                $this->pdo->rollBack();
+                Response::error(404, 'not_found', 'Game not found.');
+            }
 
-        // ✅ 5. Block if not playing
-        if ($game['status'] !== 'playing') {
-            $this->pdo->rollBack();
-            Response::error(403, 'forbidden', 'Game is not active.');
-        }
+            if (!$this->playerInGame($gameId, $playerId)) {
+                $this->pdo->rollBack();
+                Response::error(403, 'forbidden', 'Player is not in this game.');
+            }
 
-        $gridSize = (int)$game['grid_size'];
+            if ($game['status'] === 'finished') {
+                $this->pdo->rollBack();
+                Response::error(400, 'bad_request', 'Game already finished.');
+            }
 
-        // ✅ 6. Bounds check
-        if ($row < 0 || $col < 0 || $row >= $gridSize || $col >= $gridSize) {
-            $this->pdo->rollBack();
-            Response::error(400, 'bad_request', 'Out of bounds.');
-        }
+            if ($game['status'] !== 'playing') {
+                $this->pdo->rollBack();
+                Response::error(400, 'bad_request', 'Game is not in playing state.');
+            }
 
-        // 🔥 7. DUPLICATE CHECK BEFORE TURN CHECK (CRITICAL FIX)
-        $dupStmt = $this->pdo->prepare(
-            'SELECT 1 FROM moves WHERE game_id = :game_id AND row_idx = :row AND col_idx = :col LIMIT 1'
-        );
-        $dupStmt->execute([
-            ':game_id' => (int)$gameId,
-            ':row' => (int)$row,
-            ':col' => (int)$col,
-        ]);
+            $gridSize = (int)$game['grid_size'];
+            if ($row < 0 || $col < 0 || $row >= $gridSize || $col >= $gridSize) {
+                $this->pdo->rollBack();
+                Response::error(400, 'bad_request', 'Shot out of bounds.');
+            }
 
-        if ($dupStmt->fetch()) {
-            $this->pdo->rollBack();
-            Response::error(409, 'conflict', 'Cell already targeted.');
-        }
-
-        // ✅ 8. Turn check AFTER duplicate check
-        $currentPlayerId = $this->getCurrentTurnPlayerId($gameId);
-        if ($currentPlayerId === null || $currentPlayerId !== $playerId) {
-            $this->pdo->rollBack();
-            Response::error(403, 'forbidden', 'Not your turn.');
-        }
-
-        // ✅ 9. Hit or miss
-        $hitStmt = $this->pdo->prepare(
-            'SELECT 1 FROM ships WHERE game_id = :game_id AND row_idx = :row AND col_idx = :col LIMIT 1'
-        );
-        $hitStmt->execute([
-            ':game_id' => $gameId,
-            ':row' => $row,
-            ':col' => $col,
-        ]);
-
-        $isHit = $hitStmt->fetch() ? true : false;
-        $result = $isHit ? 'hit' : 'miss';
-
-        // ✅ 10. Insert move
-        $this->pdo->prepare(
-            'INSERT INTO moves (game_id, player_id, row_idx, col_idx, result)
-             VALUES (:game_id, :player_id, :row, :col, :result)'
-        )->execute([
-            ':game_id' => $gameId,
-            ':player_id' => $playerId,
-            ':row' => $row,
-            ':col' => $col,
-            ':result' => $result,
-        ]);
-
-        // ✅ 11. Update stats
-        $this->pdo->prepare(
-            'UPDATE players
-             SET total_shots = total_shots + 1,
-                 total_hits = total_hits + :hit
-             WHERE player_id = :player_id'
-        )->execute([
-            ':hit' => $isHit ? 1 : 0,
-            ':player_id' => $playerId,
-        ]);
-
-        // ✅ 12. Check winner
-        $winnerId = $this->determineWinner($gameId);
-        if ($winnerId !== null) {
-            $this->pdo->prepare(
-                'UPDATE games SET status = \'finished\', winner_id = :winner WHERE game_id = :game_id'
-            )->execute([
-                ':winner' => $winnerId,
+            $dupStmt = $this->pdo->prepare('SELECT COUNT(*) FROM moves WHERE game_id = :game_id AND row_idx = :row AND col_idx = :col');
+            $dupStmt->execute([
                 ':game_id' => $gameId,
+                ':row' => $row,
+                ':col' => $col,
+            ]);
+            if ((int)$dupStmt->fetchColumn() > 0) {
+                $this->pdo->rollBack();
+                Response::error(409, 'conflict', 'Cell already targeted.');
+            }
+
+            $currentPlayerId = $this->getCurrentTurnPlayerId($gameId);
+            if ($currentPlayerId === null || $currentPlayerId !== $playerId) {
+                $this->pdo->rollBack();
+                Response::error(403, 'forbidden', 'Not your turn.');
+            }
+
+            $hitStmt = $this->pdo->prepare('SELECT player_id FROM ships WHERE game_id = :game_id AND row_idx = :row AND col_idx = :col LIMIT 1');
+            $hitStmt->execute([
+                ':game_id' => $gameId,
+                ':row' => $row,
+                ':col' => $col,
+            ]);
+            $hitShipOwner = $hitStmt->fetchColumn();
+            $result = $hitShipOwner !== false ? 'hit' : 'miss';
+
+            $insertMove = $this->pdo->prepare('INSERT INTO moves (game_id, player_id, row_idx, col_idx, result) VALUES (:game_id, :player_id, :row, :col, :result)');
+            $insertMove->execute([
+                ':game_id' => $gameId,
+                ':player_id' => $playerId,
+                ':row' => $row,
+                ':col' => $col,
+                ':result' => $result,
             ]);
 
-            $this->updateFinalPlayerStats($gameId, $winnerId);
+            $this->pdo->prepare('UPDATE players SET total_shots = total_shots + 1, total_hits = total_hits + :hit_inc WHERE player_id = :player_id')
+                ->execute([
+                    ':hit_inc' => $result === 'hit' ? 1 : 0,
+                    ':player_id' => $playerId,
+                ]);
+
+            $winnerId = $this->determineWinner($gameId);
+            if ($winnerId !== null) {
+                $this->pdo->prepare("UPDATE games SET status = 'finished', winner_id = :winner_id WHERE game_id = :game_id")
+                    ->execute([
+                        ':winner_id' => $winnerId,
+                        ':game_id' => $gameId,
+                    ]);
+                $this->updateFinalPlayerStats($gameId, $winnerId);
+                $this->pdo->commit();
+
+                Response::json(200, [
+                    'result' => $result,
+                    'next_player_id' => null,
+                    'game_status' => 'finished',
+                    'status' => 'finished',
+                    'winner_id' => $winnerId,
+                ]);
+            }
+
+            $nextIndex = $this->getNextTurnIndex($gameId);
+            $this->pdo->prepare('UPDATE games SET current_turn_index = :turn_index WHERE game_id = :game_id')
+                ->execute([
+                    ':turn_index' => $nextIndex,
+                    ':game_id' => $gameId,
+                ]);
+            $nextPlayerId = $this->getPlayerIdByTurnOrder($gameId, $nextIndex);
 
             $this->pdo->commit();
 
             Response::json(200, [
                 'result' => $result,
-                'next_player_id' => null,
-                'game_status' => 'finished',
-                'winner_id' => $winnerId,
+                'next_player_id' => $nextPlayerId,
+                'game_status' => 'playing',
+                'status' => 'playing',
+                'state' => 'active',
             ]);
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
         }
-
-        // ✅ 13. Advance turn
-        $nextIndex = $this->getNextTurnIndex($gameId);
-        $this->pdo->prepare(
-            'UPDATE games SET current_turn_index = :idx WHERE game_id = :game_id'
-        )->execute([
-            ':idx' => $nextIndex,
-            ':game_id' => $gameId,
-        ]);
-
-        $nextPlayerId = $this->getPlayerIdByTurnOrder($gameId, $nextIndex);
-
-        $this->pdo->commit();
-
-        Response::json(200, [
-            'result' => $result,
-            'next_player_id' => $nextPlayerId,
-            'game_status' => 'playing',
-        ]);
-    } catch (Throwable $e) {
-        if ($this->pdo->inTransaction()) {
-            $this->pdo->rollBack();
-        }
-        throw $e;
     }
-}
 
     public function getMoves(int $gameId): void
     {

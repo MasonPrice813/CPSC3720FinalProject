@@ -212,7 +212,7 @@ class GameController
             ':game_id' => $gameId,
             ':player_id' => $playerId,
         ]);
-        
+
         if ((int)$duplicateStmt->fetchColumn() > 0) {
             // 🔥 Check if this player is the creator (turn_order = 0)
             $stmt = $this->pdo->prepare("
@@ -479,12 +479,33 @@ public function fire(int $gameId): void
             Response::error(400, 'bad_request', 'Out of bounds.');
         }
 
-        // 🔥 7. DUPLICATE CHECK BEFORE TURN CHECK (CRITICAL FIX)
+        /*// 🔥 7. DUPLICATE CHECK BEFORE TURN CHECK (CRITICAL FIX)
         $dupStmt = $this->pdo->prepare(
             'SELECT 1 FROM moves WHERE game_id = :game_id AND row_idx = :row AND col_idx = :col LIMIT 1'
         );
         $dupStmt->execute([
             ':game_id' => $gameId,
+            ':row' => $row,
+            ':col' => $col,
+        ]);
+
+        if ($dupStmt->fetch()) {
+            $this->pdo->rollBack();
+            Response::error(409, 'conflict', 'Cell already targeted.');
+        }
+        */
+
+        $dupStmt = $this->pdo->prepare(
+            'SELECT 1 FROM moves 
+            WHERE game_id = :game_id 
+            AND player_id = :player_id
+            AND row_idx = :row 
+            AND col_idx = :col 
+            LIMIT 1'
+        );
+        $dupStmt->execute([
+            ':game_id' => $gameId,
+            ':player_id' => $playerId,
             ':row' => $row,
             ':col' => $col,
         ]);

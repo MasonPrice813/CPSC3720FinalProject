@@ -212,7 +212,30 @@ class GameController
             ':game_id' => $gameId,
             ':player_id' => $playerId,
         ]);
+        
         if ((int)$duplicateStmt->fetchColumn() > 0) {
+            // 🔥 Check if this player is the creator (turn_order = 0)
+            $stmt = $this->pdo->prepare("
+                SELECT turn_order FROM game_players
+                WHERE game_id = :game_id AND player_id = :player_id
+            ");
+            $stmt->execute([
+                ':game_id' => $gameId,
+                ':player_id' => $playerId,
+            ]);
+
+            $row = $stmt->fetch();
+
+            if ($row && (int)$row['turn_order'] === 0) {
+                // ✅ ALLOW creator to "join again"
+                Response::json(200, [
+                    'status' => 'joined',
+                    'game_id' => $gameId,
+                    'player_id' => $playerId,
+                ]);
+            }
+
+            // ❌ Block everyone else
             Response::error(400, 'bad_request', 'Player already joined this game.');
         }
 

@@ -13,7 +13,8 @@ class Response
     public static function error(int $statusCode, string $errorCode, ?string $message = null, array $extra = []): void
     {
         $payload = array_merge([
-            'error' => $errorCode,
+            'error' => true,
+            'code' => $errorCode,
         ], $extra);
 
         if ($message !== null) {

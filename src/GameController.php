@@ -380,9 +380,9 @@ class GameController
 
             $this->pdo->commit();
 
-           Response::json(200, [
+            Response::json(200, [
                 'status' => 'placed',
-                'success' => true,
+                'message' => 'ok',
                 'game_id' => $gameId,
                 'player_id' => $playerId,
             ]);
